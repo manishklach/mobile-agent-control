@@ -1,0 +1,38 @@
+.DS_Store
+Thumbs.db
+
+# Local environment and secrets
+.env
+*.env
+backend/.env
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+backend/.venv/
+
+# Android / Gradle
+.gradle/
+.kotlin/
+build/
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+
+# IDE / editor
+.idea/
+.vscode/
+*.iml
+
+# Local tools and temp artifacts
+tools/
+window_dump.xml
+*.log

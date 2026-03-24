@@ -1,0 +1,22 @@
+{
+  "codex": {
+    "label": "codex-default",
+    "command": [
+      "python",
+      "-c",
+      "import os,time;print('Codex stub task:', os.getenv('AGENT_TASK'));[print(f'codex step {i}') or time.sleep(1) for i in range(1,6)]"
+    ],
+    "working_dir": ".",
+    "env": {}
+  },
+  "gemini": {
+    "label": "gemini-default",
+    "command": [
+      "python",
+      "-c",
+      "import os,time,sys;print('Gemini stub task:', os.getenv('AGENT_TASK'));[print(f'gemini step {i}') or time.sleep(1) for i in range(1,6)]"
+    ],
+    "working_dir": ".",
+    "env": {}
+  }
+}
