@@ -257,11 +257,29 @@ Planned migration path:
 - `cli_runtime_executor.py` launches only configured safe profiles from `backend/config/launch_profiles.json`.
 - Worker scaling and pause/resume semantics are intentionally deferred.
 - All state is in memory and resets on restart.
-- Recent agents, tasks, and audit entries are now persisted locally to `backend/data/supervisor_state.json`.
+- Recent agents, tasks, and audit entries are now persisted locally to `backend/data/supervisor_state.db`.
+- The state store uses SQLite by default and will migrate a legacy `supervisor_state.json` snapshot if present.
 - Tailscale is a temporary pre-release transport layer only.
 - `gemini-safe-default` is the default sample runtime and uses `GeminiCliAdapter`.
 - `codex-safe-default` uses the same adapter architecture via `CodexCliAdapter`.
 - Vendor-specific auth and CLI detection now live in adapter modules instead of shared supervisor code paths.
+
+## Automated Backend Tests
+
+Run the current backend unit suite with:
+
+```powershell
+cd backend
+. .venv\Scripts\Activate.ps1
+python -m unittest discover -s tests -v
+```
+
+Current automated coverage focuses on:
+
+- SQLite state-store round trips and JSON migration
+- queued agent cancellation
+- mock startup and task completion transitions
+- restore-time normalization of in-flight agents and jobs after supervisor restart
 
 ## Minimal Test Checklist
 

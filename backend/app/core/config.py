@@ -49,7 +49,7 @@ class AppSettings(BaseSettings):
     mock_job_step_delay_ms: int = 800
     mock_job_steps: int = 3
     launch_profiles_path: str = "config/launch_profiles.json"
-    state_store_path: str = "data/supervisor_state.json"
+    state_store_path: str = "data/supervisor_state.db"
     allowed_workspace_roots: list[str] = Field(default_factory=list)
     configured_workspaces: list[str] = Field(default_factory=list)
     workspace_discovery_depth: int = 2
