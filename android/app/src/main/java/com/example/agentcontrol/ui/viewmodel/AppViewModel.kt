@@ -5,14 +5,19 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.agentcontrol.data.model.AgentDetailResponse
 import com.example.agentcontrol.data.model.AgentRecord
+import com.example.agentcontrol.data.model.AgentRuntimeStatus
 import com.example.agentcontrol.data.model.AuditEntry
+import com.example.agentcontrol.data.model.DashboardActivityItem
 import com.example.agentcontrol.data.model.JobRecord
 import com.example.agentcontrol.data.model.LaunchAgentRequest
 import com.example.agentcontrol.data.model.LaunchProfileRecord
+import com.example.agentcontrol.data.model.MachineHealthStatus
 import com.example.agentcontrol.data.model.MachineOverview
 import com.example.agentcontrol.data.model.MachineSelfResponse
+import com.example.agentcontrol.data.model.RunningAgentOverview
 import com.example.agentcontrol.data.model.StartAgentRequest
 import com.example.agentcontrol.data.model.SupervisorEvent
+import com.example.agentcontrol.data.model.WorkspaceRecord
 import com.example.agentcontrol.data.repository.MachineRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -32,11 +37,18 @@ data class AppUiState(
     val tasks: UiState<List<JobRecord>> = UiState.Loading,
     val audit: UiState<List<AuditEntry>> = UiState.Loading,
     val launchProfiles: UiState<List<LaunchProfileRecord>> = UiState.Loading,
+    val workspaces: UiState<List<WorkspaceRecord>> = UiState.Loading,
+    val runningAgents: UiState<List<RunningAgentOverview>> = UiState.Loading,
+    val dashboardActivity: UiState<List<DashboardActivityItem>> = UiState.Loading,
+    val selectedAgentMetrics: UiState<AgentRuntimeStatus> = UiState.Loading,
+    val selectedAgentEvents: UiState<List<SupervisorEvent>> = UiState.Loading,
     val liveEvents: List<SupervisorEvent> = emptyList(),
     val selectedMachineId: String? = null,
+    val lastWorkspace: String? = null,
     val actionError: String? = null,
     val actionMessage: String? = null,
     val launchedAgentId: String? = null,
+    val launchedAgentMachineId: String? = null,
     val streamStatus: String = "Disconnected"
 )
 
@@ -53,14 +65,16 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
             val results = repository.observeMachines().value.map { repository.loadMachineOverview(it) }.map { overview ->
                 val prior = previous[overview.config.id]
                 if (overview.isOnline) {
-                    overview.copy(lastSeenAt = overview.health?.time ?: overview.machine?.updatedAt ?: prior?.lastSeenAt)
+                    overview.copy(lastSeenAt = overview.machineHealth?.lastSeen ?: overview.health?.time ?: overview.machine?.updatedAt ?: prior?.lastSeenAt)
                 } else {
-                    overview.copy(health = prior?.health, machine = prior?.machine, lastSeenAt = prior?.lastSeenAt)
+                    overview.copy(health = prior?.health, machineHealth = prior?.machineHealth, machine = prior?.machine, lastSeenAt = prior?.lastSeenAt)
                 }
             }
             _uiState.update {
                 it.copy(machines = if (results.isEmpty()) UiState.Error("No machines configured") else UiState.Success(results))
             }
+            loadRunningAgents()
+            loadDashboardActivity()
         }
     }
 
@@ -78,13 +92,14 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
                 liveEvents = emptyList(),
                 actionError = null,
                 actionMessage = null,
-                launchedAgentId = null
+                launchedAgentId = null,
+                launchedAgentMachineId = null
             )
         }
     }
 
     fun clearLaunchNavigation() {
-        _uiState.update { it.copy(launchedAgentId = null) }
+        _uiState.update { it.copy(launchedAgentId = null, launchedAgentMachineId = null) }
     }
 
     fun loadMachineDetail(machineId: String) {
@@ -92,7 +107,7 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
             _uiState.update { it.copy(machineDetail = UiState.Loading, selectedMachineId = machineId) }
             runCatching { repository.machineSelf(machineId) }
                 .onSuccess { response -> _uiState.update { it.copy(machineDetail = UiState.Success(response)) } }
-                .onFailure { error -> _uiState.update { it.copy(machineDetail = UiState.Error(error.message ?: "Failed to load machine")) } }
+                .onFailure { error -> _uiState.update { it.copy(machineDetail = UiState.Error(repository.userMessage(error))) } }
         }
     }
 
@@ -101,16 +116,65 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
             _uiState.update { it.copy(agents = UiState.Loading) }
             runCatching { repository.listAgents(machineId).agents }
                 .onSuccess { agents -> _uiState.update { it.copy(agents = UiState.Success(agents), actionError = null) } }
-                .onFailure { error -> _uiState.update { it.copy(agents = UiState.Error(error.message ?: "Failed to load agents")) } }
+                .onFailure { error -> _uiState.update { it.copy(agents = UiState.Error(repository.userMessage(error))) } }
         }
     }
 
     fun loadAgent(machineId: String, agentId: String) {
         viewModelScope.launch {
-            _uiState.update { it.copy(selectedAgent = UiState.Loading) }
-            runCatching { repository.getAgent(machineId, agentId) }
-                .onSuccess { response -> _uiState.update { it.copy(selectedAgent = UiState.Success(response), actionError = null) } }
-                .onFailure { error -> _uiState.update { it.copy(selectedAgent = UiState.Error(error.message ?: "Failed to load agent")) } }
+            _uiState.update {
+                it.copy(
+                    selectedAgent = UiState.Loading,
+                    selectedAgentMetrics = UiState.Loading,
+                    selectedAgentEvents = UiState.Loading
+                )
+            }
+            runCatching {
+                Triple(
+                    repository.getAgent(machineId, agentId),
+                    repository.getAgentMetrics(machineId, agentId).status,
+                    repository.getAgentEvents(machineId, agentId).events
+                )
+            }.onSuccess { (response, metrics, events) ->
+                _uiState.update {
+                    it.copy(
+                        selectedAgent = UiState.Success(response),
+                        selectedAgentMetrics = UiState.Success(metrics),
+                        selectedAgentEvents = UiState.Success(events.sortedByDescending { event -> event.timestamp }),
+                        actionError = null
+                    )
+                }
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        selectedAgent = UiState.Error(repository.userMessage(error)),
+                        selectedAgentMetrics = UiState.Error(repository.userMessage(error)),
+                        selectedAgentEvents = UiState.Error(repository.userMessage(error))
+                    )
+                }
+            }
+        }
+    }
+
+    fun loadRunningAgents() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(runningAgents = UiState.Loading) }
+            runCatching { repository.loadRunningAgentsAcrossMachines() }
+                .onSuccess { agents ->
+                    _uiState.update { it.copy(runningAgents = UiState.Success(agents)) }
+                }
+                .onFailure { error ->
+                    _uiState.update { it.copy(runningAgents = UiState.Error(repository.userMessage(error))) }
+                }
+        }
+    }
+
+    fun loadDashboardActivity() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(dashboardActivity = UiState.Loading) }
+            runCatching { repository.loadDashboardActivityAcrossMachines() }
+                .onSuccess { items -> _uiState.update { it.copy(dashboardActivity = UiState.Success(items)) } }
+                .onFailure { error -> _uiState.update { it.copy(dashboardActivity = UiState.Error(repository.userMessage(error))) } }
         }
     }
 
@@ -119,7 +183,7 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
             _uiState.update { it.copy(tasks = UiState.Loading) }
             runCatching { repository.listTasks(machineId).tasks }
                 .onSuccess { tasks -> _uiState.update { it.copy(tasks = UiState.Success(tasks)) } }
-                .onFailure { error -> _uiState.update { it.copy(tasks = UiState.Error(error.message ?: "Failed to load tasks")) } }
+                .onFailure { error -> _uiState.update { it.copy(tasks = UiState.Error(repository.userMessage(error))) } }
         }
     }
 
@@ -128,7 +192,7 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
             _uiState.update { it.copy(audit = UiState.Loading) }
             runCatching { repository.getAudit(machineId).entries }
                 .onSuccess { entries -> _uiState.update { it.copy(audit = UiState.Success(entries)) } }
-                .onFailure { error -> _uiState.update { it.copy(audit = UiState.Error(error.message ?: "Failed to load audit")) } }
+                .onFailure { error -> _uiState.update { it.copy(audit = UiState.Error(repository.userMessage(error))) } }
         }
     }
 
@@ -137,7 +201,30 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
             _uiState.update { it.copy(launchProfiles = UiState.Loading) }
             runCatching { repository.launchProfiles(machineId).profiles }
                 .onSuccess { profiles -> _uiState.update { it.copy(launchProfiles = UiState.Success(profiles)) } }
-                .onFailure { error -> _uiState.update { it.copy(launchProfiles = UiState.Error(error.message ?: "Failed to load launch profiles")) } }
+                .onFailure { error -> _uiState.update { it.copy(launchProfiles = UiState.Error(repository.userMessage(error))) } }
+        }
+    }
+
+    fun loadWorkspaces(machineId: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(workspaces = UiState.Loading, lastWorkspace = repository.lastWorkspace(machineId)) }
+            runCatching { repository.workspaces(machineId).workspaces }
+                .onSuccess { workspaces ->
+                    _uiState.update {
+                        it.copy(
+                            workspaces = UiState.Success(workspaces),
+                            lastWorkspace = repository.lastWorkspace(machineId)
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    _uiState.update {
+                        it.copy(
+                            workspaces = UiState.Error(repository.userMessage(error)),
+                            lastWorkspace = repository.lastWorkspace(machineId)
+                        )
+                    }
+                }
         }
     }
 
@@ -148,7 +235,7 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
                     _uiState.update { it.copy(selectedAgent = UiState.Success(response), actionError = null, actionMessage = "Agent started") }
                     refreshMachine(machineId)
                 }
-                .onFailure { error -> _uiState.update { it.copy(actionError = error.message ?: "Failed to start agent", actionMessage = null) } }
+                .onFailure { error -> _uiState.update { it.copy(actionError = repository.userMessage(error), actionMessage = null) } }
         }
     }
 
@@ -173,13 +260,52 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
                     it.copy(
                         selectedAgent = UiState.Success(response),
                         actionError = null,
-                        actionMessage = "Agent launched",
-                        launchedAgentId = response.agent.id
+                        actionMessage = if (response.agent.state.equals("pending", ignoreCase = true)) "Launch queued" else "Agent launched",
+                        launchedAgentId = response.agent.id,
+                        launchedAgentMachineId = machineId
                     )
                 }
                 refreshMachine(machineId)
+                loadRunningAgents()
+                loadDashboardActivity()
             }.onFailure { error ->
-                _uiState.update { it.copy(actionError = error.message ?: "Failed to launch agent", actionMessage = null) }
+                _uiState.update { it.copy(actionError = repository.userMessage(error), actionMessage = null) }
+            }
+        }
+    }
+
+    fun launchAgentOnBestMachine(type: String, launchProfile: String, workspace: String, initialPrompt: String?) {
+        if (workspace.isBlank()) {
+            _uiState.update { it.copy(actionError = "Workspace is required", actionMessage = null) }
+            return
+        }
+        viewModelScope.launch {
+            runCatching {
+                repository.launchAgentOnBestMachine(
+                    LaunchAgentRequest(
+                        type = type,
+                        launchProfile = launchProfile,
+                        workspace = workspace,
+                        initialPrompt = initialPrompt?.takeIf { it.isNotBlank() }
+                    )
+                )
+            }.onSuccess { result ->
+                _uiState.update {
+                    it.copy(
+                        selectedMachineId = result.machine.id,
+                        selectedAgent = UiState.Success(result.agent),
+                        actionError = null,
+                        actionMessage = "Launched on ${result.machine.name}",
+                        launchedAgentId = result.agent.agent.id,
+                        launchedAgentMachineId = result.machine.id
+                    )
+                }
+                refreshMachine(result.machine.id)
+                loadMachines()
+                loadRunningAgents()
+                loadDashboardActivity()
+            }.onFailure { error ->
+                _uiState.update { it.copy(actionError = repository.userMessage(error), actionMessage = null) }
             }
         }
     }
@@ -203,8 +329,10 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
                 .onSuccess {
                     _uiState.update { state -> state.copy(actionError = null, actionMessage = "Dispatched $type to ${best.config.name}", selectedMachineId = best.config.id) }
                     loadMachines()
+                    loadRunningAgents()
+                    loadDashboardActivity()
                 }
-                .onFailure { error -> _uiState.update { it.copy(actionError = error.message ?: "Failed to dispatch to best machine", actionMessage = null) } }
+                .onFailure { error -> _uiState.update { it.copy(actionError = repository.userMessage(error), actionMessage = null) } }
         }
     }
 
@@ -214,8 +342,10 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
                 .onSuccess { response ->
                     _uiState.update { it.copy(selectedAgent = UiState.Success(response), actionError = null, actionMessage = "Agent stopped") }
                     refreshMachine(machineId)
+                    loadRunningAgents()
+                    loadDashboardActivity()
                 }
-                .onFailure { error -> _uiState.update { it.copy(actionError = error.message ?: "Failed to stop agent", actionMessage = null) } }
+                .onFailure { error -> _uiState.update { it.copy(actionError = repository.userMessage(error), actionMessage = null) } }
         }
     }
 
@@ -225,8 +355,10 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
                 .onSuccess { response ->
                     _uiState.update { it.copy(selectedAgent = UiState.Success(response), actionError = null, actionMessage = "Agent restart queued") }
                     refreshMachine(machineId)
+                    loadRunningAgents()
+                    loadDashboardActivity()
                 }
-                .onFailure { error -> _uiState.update { it.copy(actionError = error.message ?: "Failed to restart agent", actionMessage = null) } }
+                .onFailure { error -> _uiState.update { it.copy(actionError = repository.userMessage(error), actionMessage = null) } }
         }
     }
 
@@ -236,8 +368,10 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
                 .onSuccess { response ->
                     _uiState.update { it.copy(selectedAgent = UiState.Success(response), actionError = null, actionMessage = "Prompt submitted") }
                     refreshMachine(machineId)
+                    loadRunningAgents()
+                    loadDashboardActivity()
                 }
-                .onFailure { error -> _uiState.update { it.copy(actionError = error.message ?: "Failed to send prompt", actionMessage = null) } }
+                .onFailure { error -> _uiState.update { it.copy(actionError = repository.userMessage(error), actionMessage = null) } }
         }
     }
 
@@ -253,8 +387,12 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
                                 machineDetail = mergeMachineEvent(current.machineDetail, event),
                                 agents = mergeAgentEvent(current.agents, event),
                                 selectedAgent = mergeAgentDetailEvent(current.selectedAgent, event),
+                                selectedAgentMetrics = mergeAgentMetricsEvent(current.selectedAgentMetrics, event),
+                                selectedAgentEvents = mergeAgentEventsEvent(current.selectedAgentEvents, event),
                                 tasks = mergeTaskEvent(current.tasks, event),
                                 audit = mergeAuditEvent(current.audit, event),
+                                runningAgents = mergeRunningAgentsEvent(current.runningAgents, event),
+                                dashboardActivity = mergeDashboardActivityEvent(current.dashboardActivity, event),
                                 liveEvents = (listOf(event) + current.liveEvents).take(100),
                                 streamStatus = "Live",
                                 actionMessage = completionMessage(current.actionMessage, event)
@@ -274,6 +412,8 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
         loadAgents(machineId)
         loadTasks(machineId)
         loadAudit(machineId)
+        loadRunningAgents()
+        loadDashboardActivity()
     }
 
     private fun mergeMachineEvent(current: UiState<MachineSelfResponse>, event: SupervisorEvent): UiState<MachineSelfResponse> {
@@ -301,7 +441,26 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
         return when (current) {
             is UiState.Success -> {
                 if (current.data.agent.id != agent.id) current
-                else UiState.Success(current.data.copy(agent = mergeAgent(current.data.agent, agent, event), currentJob = if (event.job?.agentId == agent.id) event.job else current.data.currentJob))
+                else {
+                    val mergedRecentJobs = mergeRecentJobs(current.data.recentJobs, event.job)
+                    val latestCompletedJob = when {
+                        event.job?.agentId == agent.id && event.job.state in setOf("completed", "failed", "cancelled") -> event.job
+                        else -> mergedRecentJobs.firstOrNull { it.state in setOf("completed", "failed", "cancelled") } ?: current.data.latestCompletedJob
+                    }
+                    val mergedCurrentJob = when {
+                        event.job?.agentId != agent.id -> current.data.currentJob
+                        event.job.state in setOf("running", "queued") -> event.job
+                        else -> event.job
+                    }
+                    UiState.Success(
+                        current.data.copy(
+                            agent = mergeAgent(current.data.agent, agent, event),
+                            currentJob = mergedCurrentJob,
+                            latestCompletedJob = latestCompletedJob,
+                            recentJobs = mergedRecentJobs
+                        )
+                    )
+                }
             }
             else -> current
         }
@@ -323,6 +482,96 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
         }
     }
 
+    private fun mergeRunningAgentsEvent(current: UiState<List<RunningAgentOverview>>, event: SupervisorEvent): UiState<List<RunningAgentOverview>> {
+        val status = event.agentStatus ?: return current
+        val machineId = event.machine?.id ?: status.machineId
+        return when (current) {
+            is UiState.Success -> {
+                val machines = repository.allMachines().associateBy { it.id }
+                val machine = machines[machineId] ?: return current
+                val merged = RunningAgentOverview(machine = machine, machineHealth = event.machineHealth, status = status)
+                val filtered = current.data.filterNot { it.status.agentId == status.agentId }
+                val next = if (status.state.lowercase() in setOf("stopped", "failed") && !status.warningIndicator && !status.stuckIndicator) {
+                    filtered
+                } else {
+                    filtered + merged
+                }
+                UiState.Success(
+                    next.sortedWith(
+                        compareByDescending<RunningAgentOverview> { it.status.monitorState == "stuck" }
+                            .thenByDescending { it.status.monitorState == "warning" }
+                            .thenByDescending { it.status.monitorState == "running" }
+                            .thenByDescending { it.status.elapsedSeconds }
+                    )
+                )
+            }
+            else -> current
+        }
+    }
+
+    private fun mergeAgentMetricsEvent(current: UiState<AgentRuntimeStatus>, event: SupervisorEvent): UiState<AgentRuntimeStatus> {
+        val status = event.agentStatus ?: return current
+        return when (current) {
+            is UiState.Success -> if (current.data.agentId == status.agentId) UiState.Success(status) else current
+            else -> current
+        }
+    }
+
+    private fun mergeAgentEventsEvent(current: UiState<List<SupervisorEvent>>, event: SupervisorEvent): UiState<List<SupervisorEvent>> {
+        val agentId = event.agent?.id ?: event.job?.agentId ?: event.agentStatus?.agentId ?: return current
+        return when (current) {
+            is UiState.Success -> {
+                val existingAgentId = current.data.firstOrNull()?.agent?.id
+                    ?: current.data.firstOrNull()?.job?.agentId
+                    ?: current.data.firstOrNull()?.agentStatus?.agentId
+                if (existingAgentId != null && existingAgentId != agentId) current
+                else UiState.Success((listOf(event) + current.data).distinctBy { "${it.timestamp}-${it.event}-${it.message}" }.take(50))
+            }
+            else -> current
+        }
+    }
+
+    private fun mergeDashboardActivityEvent(current: UiState<List<DashboardActivityItem>>, event: SupervisorEvent): UiState<List<DashboardActivityItem>> {
+        val machine = event.machine ?: return current
+        val item = when {
+            event.audit != null && event.audit.action in setOf("launch_agent", "restart_agent", "start_agent", "stop_agent") ->
+                DashboardActivityItem(
+                    machineId = machine.id,
+                    machineName = machine.name,
+                    timestamp = event.audit.timestamp,
+                    category = "audit",
+                    status = event.audit.status,
+                    title = when (event.audit.action) {
+                        "launch_agent" -> "Launch"
+                        "restart_agent" -> "Restart"
+                        "stop_agent" -> "Stop"
+                        else -> "Start"
+                    },
+                    detail = event.audit.message
+                )
+            event.job != null && event.job.state in setOf("completed", "failed", "cancelled") ->
+                DashboardActivityItem(
+                    machineId = machine.id,
+                    machineName = machine.name,
+                    timestamp = event.job.updatedAt,
+                    category = "task",
+                    status = event.job.state,
+                    title = when (event.job.state) {
+                        "completed" -> "Completion"
+                        "failed" -> "Failure"
+                        else -> "Cancelled"
+                    },
+                    detail = event.job.summary ?: event.job.error ?: event.job.inputText
+                )
+            else -> null
+        } ?: return current
+
+        return when (current) {
+            is UiState.Success -> UiState.Success((listOf(item) + current.data).distinctBy { "${it.timestamp}-${it.title}-${it.detail}" }.take(20))
+            else -> current
+        }
+    }
+
     private fun mergeAgent(previous: AgentRecord?, incoming: AgentRecord, event: SupervisorEvent): AgentRecord {
         if (event.log == null) return incoming
         val mergedLogs = ((previous?.recentLogs ?: emptyList()) + event.log)
@@ -338,6 +587,11 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
             "agent.stopped" -> event.message ?: "Agent stopped"
             else -> currentMessage
         }
+    }
+
+    private fun mergeRecentJobs(current: List<JobRecord>, incoming: JobRecord?): List<JobRecord> {
+        if (incoming == null) return current
+        return (current.filterNot { it.id == incoming.id } + incoming).sortedByDescending { it.updatedAt }.take(8)
     }
 
     override fun onCleared() {

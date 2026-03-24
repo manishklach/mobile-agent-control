@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.deps import get_agent_manager
 from app.api.routes import router
 from app.core.config import get_settings
 from app.ui.admin import router as admin_router
@@ -19,3 +20,13 @@ app.add_middleware(
 )
 app.include_router(router)
 app.include_router(admin_router)
+
+
+@app.on_event("startup")
+async def startup() -> None:
+    get_agent_manager().start_background_tasks()
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    await get_agent_manager().stop_background_tasks()

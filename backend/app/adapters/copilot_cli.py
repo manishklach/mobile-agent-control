@@ -1,0 +1,26 @@
+from __future__ import annotations
+
+from app.adapters.base import CliAgentRuntimeAdapter
+from app.models import AgentType, RuntimeCapabilities
+
+
+class CopilotCliAdapter(CliAgentRuntimeAdapter):
+    adapter_id = "copilot-cli"
+    agent_type = AgentType.CODEX
+    label = "GitHub Copilot CLI"
+    capabilities = RuntimeCapabilities(
+        supports_initial_prompt=False,
+        supports_prompt_submission=False,
+        supports_background_process=False,
+        supports_streaming_logs=False,
+        requires_workspace=True,
+        requires_local_auth=True,
+        supports_resume=False,
+    )
+
+    def preflight(self) -> None:
+        if not self.find_binary("github-copilot-cli", "copilot", "gh"):
+            raise ValueError("Copilot CLI is not installed or not on PATH")
+
+    def run_prompt(self, prompt: str, workspace: str) -> tuple[int, str]:
+        raise ValueError("Copilot CLI adapter is registered but prompt execution is not enabled in this build")

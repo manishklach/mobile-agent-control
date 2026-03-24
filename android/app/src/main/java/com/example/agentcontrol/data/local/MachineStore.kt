@@ -34,6 +34,12 @@ class MachineStore(context: Context) {
 
     fun getMachine(id: String): MachineConfig? = _machines.value.firstOrNull { it.id == id }
 
+    fun saveLastWorkspace(machineId: String, workspace: String) {
+        prefs.edit().putString("last_workspace_$machineId", workspace).apply()
+    }
+
+    fun getLastWorkspace(machineId: String): String? = prefs.getString("last_workspace_$machineId", null)
+
     private fun loadMachines(): List<MachineConfig> {
         val raw = prefs.getString("machines", null) ?: return emptyList()
         return runCatching { json.decodeFromString(serializer, raw) }.getOrDefault(emptyList())

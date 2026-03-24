@@ -1,33 +1,21 @@
 {
   "profiles": [
     {
-      "id": "codex-safe-default",
-      "agent_type": "codex",
-      "label": "Codex Local CLI",
-      "description": "Launches a supervised local Codex CLI runner. Prompts from the app execute through the installed codex command.",
-      "command": [
-        "{backend_python}",
-        "-u",
-        "{backend_root}/app/executors/agent_runtime.py",
-        "--runner",
-        "codex"
-      ],
+      "id": "gemini-safe-default",
+      "agent_type": "gemini",
+      "adapter_id": "gemini-cli",
+      "label": "Gemini CLI (Default)",
+      "description": "Launches a supervised Gemini CLI runtime through the vendor-neutral mobile control plane adapter layer.",
       "env": {},
       "workspace_required": true,
       "supports_initial_prompt": true
     },
     {
-      "id": "gemini-safe-default",
-      "agent_type": "gemini",
-      "label": "Gemini Local CLI",
-      "description": "Launches a supervised local Gemini CLI runner. Prompts from the app execute through the installed gemini command.",
-      "command": [
-        "{backend_python}",
-        "-u",
-        "{backend_root}/app/executors/agent_runtime.py",
-        "--runner",
-        "gemini"
-      ],
+      "id": "codex-safe-default",
+      "agent_type": "codex",
+      "adapter_id": "codex-cli",
+      "label": "Codex CLI",
+      "description": "Launches a supervised Codex CLI runtime through the same adapter interface used by Gemini CLI.",
       "env": {},
       "workspace_required": true,
       "supports_initial_prompt": true

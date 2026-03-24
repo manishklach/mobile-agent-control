@@ -50,12 +50,27 @@ class LogEntry(BaseModel):
     message: str
 
 
+class ResourceUsage(BaseModel):
+    cpu_percent: float | None = None
+    memory_mb: float | None = None
+
+
 class WorkerPoolState(BaseModel):
     desired_workers: int
     busy_workers: int
     idle_workers: int
     queue_depth: int
     supports_pause_resume: bool = False
+
+
+class RuntimeCapabilities(BaseModel):
+    supports_initial_prompt: bool = True
+    supports_prompt_submission: bool = True
+    supports_background_process: bool = True
+    supports_streaming_logs: bool = True
+    requires_workspace: bool = True
+    requires_local_auth: bool = False
+    supports_resume: bool = False
 
 
 class MachineRecord(BaseModel):
@@ -71,10 +86,18 @@ class MachineRecord(BaseModel):
 class LaunchProfileRecord(BaseModel):
     id: str
     agent_type: AgentType
+    adapter_id: str
     label: str
     description: str
     workspace_required: bool = True
     supports_initial_prompt: bool = True
+    capabilities: RuntimeCapabilities = Field(default_factory=RuntimeCapabilities)
+
+
+class WorkspaceRecord(BaseModel):
+    path: str
+    label: str
+    source: str
 
 
 class JobRecord(BaseModel):
@@ -128,11 +151,32 @@ class HealthResponse(BaseModel):
     queued_jobs: int
 
 
+class MachineHealthStatus(BaseModel):
+    machine_id: str
+    machine_name: str
+    status: str
+    monitor_state: str
+    last_heartbeat: datetime
+    last_seen: datetime
+    agents_total: int
+    agents_running: int
+    agents_failed: int
+    queued_jobs: int
+    warning_count: int
+    worker_pool: WorkerPoolState
+    resources: ResourceUsage = Field(default_factory=ResourceUsage)
+
+
+class MachineListResponse(BaseModel):
+    machines: list[MachineRecord]
+
+
 class MachineSelfResponse(BaseModel):
     machine: MachineRecord
     agents_total: int
     active_agents: int
     queued_jobs: int
+    max_active_agents: int
 
 
 class AgentListResponse(BaseModel):
@@ -142,6 +186,8 @@ class AgentListResponse(BaseModel):
 class AgentDetailResponse(BaseModel):
     agent: AgentRecord
     current_job: JobRecord | None = None
+    latest_completed_job: JobRecord | None = None
+    recent_jobs: list[JobRecord] = Field(default_factory=list)
 
 
 class StartAgentRequest(BaseModel):
@@ -175,6 +221,41 @@ class LogsResponse(BaseModel):
     logs: list[LogEntry]
 
 
+class AgentRuntimeStatus(BaseModel):
+    agent_id: str
+    machine_id: str
+    machine_name: str
+    type: AgentType
+    state: AgentState
+    monitor_state: str
+    elapsed_seconds: int = 0
+    last_heartbeat: datetime | None = None
+    last_log_timestamp: datetime | None = None
+    warning_indicator: bool = False
+    stuck_indicator: bool = False
+    warning_message: str | None = None
+    current_task: str | None = None
+    workspace: str | None = None
+    launch_profile: str | None = None
+    pid: int | None = None
+    recent_logs: list[LogEntry] = Field(default_factory=list)
+    resources: ResourceUsage = Field(default_factory=ResourceUsage)
+
+
+class RunningAgentsResponse(BaseModel):
+    agents: list[AgentRuntimeStatus]
+
+
+class AgentEventsResponse(BaseModel):
+    agent_id: str
+    events: list["SupervisorEvent"]
+
+
+class AgentMetricsResponse(BaseModel):
+    agent_id: str
+    status: AgentRuntimeStatus
+
+
 class AuditLogResponse(BaseModel):
     entries: list[AuditEntry]
 
@@ -191,6 +272,10 @@ class LaunchProfilesResponse(BaseModel):
     profiles: list[LaunchProfileRecord]
 
 
+class WorkspacesResponse(BaseModel):
+    workspaces: list[WorkspaceRecord]
+
+
 class ApiError(BaseModel):
     detail: str
 
@@ -199,8 +284,17 @@ class SupervisorEvent(BaseModel):
     event: str
     timestamp: datetime
     machine: MachineRecord | None = None
+    machine_health: MachineHealthStatus | None = None
     agent: AgentRecord | None = None
+    agent_status: AgentRuntimeStatus | None = None
     job: JobRecord | None = None
     log: LogEntry | None = None
     audit: AuditEntry | None = None
     message: str | None = None
+
+
+class PersistedState(BaseModel):
+    machine: MachineRecord
+    agents: list[AgentRecord] = Field(default_factory=list)
+    jobs: list[JobRecord] = Field(default_factory=list)
+    audits: list[AuditEntry] = Field(default_factory=list)

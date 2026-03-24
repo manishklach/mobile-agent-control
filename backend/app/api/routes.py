@@ -7,19 +7,25 @@ from app.core.auth import get_current_token
 from app.core.config import get_settings
 from app.models import (
     AgentDetailResponse,
+    AgentEventsResponse,
     AgentListResponse,
+    AgentMetricsResponse,
     AuditLogResponse,
     HealthResponse,
     LaunchAgentRequest,
     LaunchProfilesResponse,
     LogsResponse,
+    MachineHealthStatus,
+    MachineListResponse,
     MachineSelfResponse,
     PromptAgentRequest,
     RestartAgentRequest,
+    RunningAgentsResponse,
     StartAgentRequest,
     SubmitTaskRequest,
     TaskDetailResponse,
     TaskListResponse,
+    WorkspacesResponse,
 )
 from app.services.agent_manager import AgentManager
 from app.services.event_bus import EventBus
@@ -43,12 +49,37 @@ async def machine_self(
     return await manager.machine_self()
 
 
+@router.get("/machines", response_model=MachineListResponse)
+async def list_machines(
+    manager: AgentManager = Depends(get_agent_manager),
+    _: str = Depends(get_current_token),
+) -> MachineListResponse:
+    return await manager.machines()
+
+
+@router.get("/machines/{machine_id}/health", response_model=MachineHealthStatus)
+async def machine_health(
+    machine_id: str,
+    manager: AgentManager = Depends(get_agent_manager),
+    _: str = Depends(get_current_token),
+) -> MachineHealthStatus:
+    return await manager.machine_health(machine_id)
+
+
 @router.get("/agents", response_model=AgentListResponse)
 async def list_agents(
     manager: AgentManager = Depends(get_agent_manager),
     _: str = Depends(get_current_token),
 ) -> AgentListResponse:
     return await manager.list_agents()
+
+
+@router.get("/agents/running", response_model=RunningAgentsResponse)
+async def running_agents(
+    manager: AgentManager = Depends(get_agent_manager),
+    _: str = Depends(get_current_token),
+) -> RunningAgentsResponse:
+    return await manager.running_agents()
 
 
 @router.get("/agents/{agent_id}", response_model=AgentDetailResponse)
@@ -75,6 +106,14 @@ async def launch_profiles(
     _: str = Depends(get_current_token),
 ) -> LaunchProfilesResponse:
     return await manager.get_launch_profiles()
+
+
+@router.get("/workspaces", response_model=WorkspacesResponse)
+async def workspaces(
+    manager: AgentManager = Depends(get_agent_manager),
+    _: str = Depends(get_current_token),
+) -> WorkspacesResponse:
+    return await manager.list_workspaces()
 
 
 @router.post("/agents/launch", response_model=AgentDetailResponse, status_code=status.HTTP_201_CREATED)
@@ -133,6 +172,25 @@ async def agent_logs(
     _: str = Depends(get_current_token),
 ) -> LogsResponse:
     return await manager.get_logs(agent_id, limit=limit)
+
+
+@router.get("/agents/{agent_id}/events", response_model=AgentEventsResponse)
+async def agent_events(
+    agent_id: str,
+    limit: int = Query(default=100, ge=1, le=500),
+    manager: AgentManager = Depends(get_agent_manager),
+    _: str = Depends(get_current_token),
+) -> AgentEventsResponse:
+    return await manager.get_agent_events(agent_id, limit=limit)
+
+
+@router.get("/agents/{agent_id}/metrics", response_model=AgentMetricsResponse)
+async def agent_metrics(
+    agent_id: str,
+    manager: AgentManager = Depends(get_agent_manager),
+    _: str = Depends(get_current_token),
+) -> AgentMetricsResponse:
+    return await manager.get_agent_metrics(agent_id)
 
 
 @router.get("/audit", response_model=AuditLogResponse)

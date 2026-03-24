@@ -8,27 +8,30 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.models import AgentType
+from app.models import AgentType, RuntimeCapabilities
 
 
 class LaunchProfileConfig(BaseModel):
     id: str
     agent_type: AgentType
+    adapter_id: str
     label: str
     description: str
-    command: list[str]
     env: dict[str, str] = Field(default_factory=dict)
     workspace_required: bool = True
     supports_initial_prompt: bool = True
+    capabilities: RuntimeCapabilities = Field(default_factory=RuntimeCapabilities)
 
     def public_dict(self) -> dict[str, object]:
         return {
             "id": self.id,
             "agent_type": self.agent_type,
+            "adapter_id": self.adapter_id,
             "label": self.label,
             "description": self.description,
             "workspace_required": self.workspace_required,
             "supports_initial_prompt": self.supports_initial_prompt,
+            "capabilities": self.capabilities.model_dump(mode="json"),
         }
 
 
@@ -46,7 +49,13 @@ class AppSettings(BaseSettings):
     mock_job_step_delay_ms: int = 800
     mock_job_steps: int = 3
     launch_profiles_path: str = "config/launch_profiles.json"
+    state_store_path: str = "data/supervisor_state.json"
     allowed_workspace_roots: list[str] = Field(default_factory=list)
+    configured_workspaces: list[str] = Field(default_factory=list)
+    workspace_discovery_depth: int = 2
+    monitoring_heartbeat_interval_seconds: int = 10
+    monitoring_warning_after_seconds: int = 60
+    monitoring_stuck_after_seconds: int = 180
     supported_controls: list[str] = Field(
         default_factory=lambda: [
             "start_agent",
@@ -67,16 +76,15 @@ class AppSettings(BaseSettings):
         }
         profiles = []
         for item in raw["profiles"]:
-            command = [
-                self._expand_placeholders(part, substitutions)
-                for part in item.get("command", [])
-            ]
             env = {
                 key: self._expand_placeholders(value, substitutions)
                 for key, value in item.get("env", {}).items()
             }
-            profiles.append(LaunchProfileConfig(**{**item, "command": command, "env": env}))
+            profiles.append(LaunchProfileConfig(**{**item, "env": env}))
         return {profile.id: profile for profile in profiles}
+
+    def state_store_file(self, base_dir: Path) -> Path:
+        return (base_dir / self.state_store_path).resolve()
 
     @staticmethod
     def _expand_placeholders(value: str, substitutions: dict[str, str]) -> str:

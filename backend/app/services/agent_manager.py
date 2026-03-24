@@ -11,12 +11,15 @@ from fastapi import HTTPException, status
 
 from app.core.config import AppSettings, LaunchProfileConfig
 from app.executors.base import ProcessHandle
+from app.executors.cli_runtime_executor import CliRuntimeExecutor
 from app.executors.mock_executor import MockExecutor
-from app.executors.shell_executor import ShellExecutor
 from app.models import (
     AgentDetailResponse,
+    AgentEventsResponse,
     AgentListResponse,
+    AgentMetricsResponse,
     AgentRecord,
+    AgentRuntimeStatus,
     AgentState,
     AuditEntry,
     AuditLogResponse,
@@ -29,20 +32,32 @@ from app.models import (
     LaunchProfileRecord,
     LaunchProfilesResponse,
     LogsResponse,
+    MachineHealthStatus,
+    MachineListResponse,
     MachineRecord,
     MachineSelfResponse,
     PromptAgentRequest,
     RestartAgentRequest,
+    RunningAgentsResponse,
     StartAgentRequest,
     SubmitTaskRequest,
     SupervisorEvent,
     TaskDetailResponse,
     TaskListResponse,
+    PersistedState,
+    WorkspaceRecord,
+    WorkspacesResponse,
     WorkerPoolState,
 )
 from app.services.event_bus import EventBus
+from app.services.state_store import StateStore
 
 EVENT_PREFIX = "__SUPERVISOR_EVENT__"
+
+try:
+    import psutil
+except ImportError:  # pragma: no cover - optional runtime dependency
+    psutil = None
 
 
 class AgentManager:
@@ -50,15 +65,17 @@ class AgentManager:
         self,
         settings: AppSettings,
         mock_executor: MockExecutor,
-        shell_executor: ShellExecutor,
+        runtime_executor: CliRuntimeExecutor,
         launch_profiles: dict[str, LaunchProfileConfig],
         event_bus: EventBus,
+        state_store: StateStore,
     ) -> None:
         self.settings = settings
         self.mock_executor = mock_executor
-        self.shell_executor = shell_executor
+        self.runtime_executor = runtime_executor
         self.launch_profiles = launch_profiles
         self.event_bus = event_bus
+        self.state_store = state_store
         now = datetime.now(UTC)
         self.machine = MachineRecord(
             id=settings.machine_id,
@@ -92,7 +109,13 @@ class AgentManager:
         self._job_tasks: dict[str, asyncio.Task[None]] = {}
         self._process_monitors: dict[str, asyncio.Task[None]] = {}
         self._log_offsets: dict[str, int] = {}
+        self._heartbeat_task: asyncio.Task[None] | None = None
+        self._last_heartbeat_at = now
+        self._event_history: deque[SupervisorEvent] = deque(maxlen=self.settings.max_log_entries)
+        self._agent_event_history: dict[str, deque[SupervisorEvent]] = {}
+        self._agent_monitor_state: dict[str, str] = {}
         self._lock = asyncio.Lock()
+        self._restore_state()
 
     async def health(self) -> HealthResponse:
         await self._refresh_machine()
@@ -106,6 +129,16 @@ class AgentManager:
             queued_jobs=sum(1 for job in self._jobs.values() if job.state == JobState.QUEUED),
         )
 
+    async def machines(self) -> MachineListResponse:
+        await self._refresh_machine()
+        return MachineListResponse(machines=[self.machine])
+
+    async def machine_health(self, machine_id: str) -> MachineHealthStatus:
+        if machine_id != self.machine.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Machine not found")
+        await self._refresh_machine()
+        return self._machine_health_status()
+
     async def machine_self(self) -> MachineSelfResponse:
         await self._refresh_machine()
         return MachineSelfResponse(
@@ -113,20 +146,69 @@ class AgentManager:
             agents_total=len(self._agents),
             active_agents=sum(1 for agent in self._agents.values() if agent.state in {AgentState.RUNNING, AgentState.IDLE, AgentState.STARTING}),
             queued_jobs=sum(1 for job in self._jobs.values() if job.state == JobState.QUEUED),
+            max_active_agents=self.settings.max_active_agents,
         )
 
     async def list_agents(self) -> AgentListResponse:
         await self._refresh_machine()
         return AgentListResponse(agents=sorted(self._agents.values(), key=lambda item: item.updated_at, reverse=True))
 
+    async def running_agents(self) -> RunningAgentsResponse:
+        await self._refresh_machine()
+        active_states = {AgentState.RUNNING, AgentState.IDLE, AgentState.STARTING, AgentState.PENDING, AgentState.STOPPING}
+        statuses = [
+            self._agent_runtime_status(agent)
+            for agent in self._agents.values()
+            if agent.state in active_states
+        ]
+        return RunningAgentsResponse(agents=sorted(statuses, key=lambda item: (item.monitor_state, -item.elapsed_seconds)))
+
     async def get_agent(self, agent_id: str) -> AgentDetailResponse:
         agent = self._require_agent(agent_id)
         current_job = self._jobs.get(agent.current_job_id) if agent.current_job_id else None
-        return AgentDetailResponse(agent=agent, current_job=current_job)
+        recent_jobs = self._recent_jobs_for_agent(agent_id)
+        latest_completed_job = next(
+            (job for job in recent_jobs if job.state in {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}),
+            None,
+        )
+        return AgentDetailResponse(agent=agent, current_job=current_job, latest_completed_job=latest_completed_job, recent_jobs=recent_jobs)
 
     async def get_launch_profiles(self) -> LaunchProfilesResponse:
         profiles = [LaunchProfileRecord(**profile.public_dict()) for profile in self.launch_profiles.values()]
-        return LaunchProfilesResponse(profiles=sorted(profiles, key=lambda item: (item.agent_type.value, item.id)))
+        return LaunchProfilesResponse(profiles=profiles)
+
+    async def list_workspaces(self) -> WorkspacesResponse:
+        configured: dict[str, WorkspaceRecord] = {}
+        for raw_path in self.settings.configured_workspaces:
+            if not raw_path.strip():
+                continue
+            try:
+                path = self._validate_workspace(raw_path)
+            except HTTPException:
+                continue
+            configured[str(path)] = WorkspaceRecord(path=str(path), label=path.name or str(path), source="configured")
+        discovered: dict[str, WorkspaceRecord] = {}
+        for root in self._workspace_roots():
+            for candidate in self._discover_workspaces(root):
+                discovered.setdefault(
+                    str(candidate),
+                    WorkspaceRecord(
+                        path=str(candidate),
+                        label=candidate.name,
+                        source="discovered",
+                    ),
+                )
+        recent = {
+            agent.workspace: WorkspaceRecord(
+                path=agent.workspace,
+                label=Path(agent.workspace).name or agent.workspace,
+                source="recent",
+            )
+            for agent in self._agents.values()
+            if agent.workspace and Path(agent.workspace).exists()
+        }
+        combined = {**discovered, **configured, **recent}
+        return WorkspacesResponse(workspaces=sorted(combined.values(), key=lambda item: (item.label.lower(), item.path.lower())))
 
     async def start_agent(self, request: StartAgentRequest) -> AgentDetailResponse:
         async with self._lock:
@@ -175,56 +257,36 @@ class AgentManager:
             now = datetime.now(UTC)
             agent_id = str(uuid4())
             startup_job = self._create_job(agent_id=agent_id, kind=JobKind.STARTUP, input_text=request.initial_prompt or "launch agent")
-            startup_job.state = JobState.RUNNING
-            startup_job.started_at = now
-            startup_job.updated_at = now
-
+            metadata = self._build_launch_metadata(request.type, request.launch_profile, str(workspace), request.initial_prompt)
             agent = AgentRecord(
                 id=agent_id,
                 type=request.type,
-                state=AgentState.STARTING,
+                state=AgentState.PENDING,
                 pid=None,
                 workspace=str(workspace),
                 launch_profile=request.launch_profile,
                 current_task=request.initial_prompt,
-                started_at=now,
+                started_at=None,
                 updated_at=now,
-                worker_id=self._allocate_worker_id(),
+                worker_id=None,
                 current_job_id=startup_job.id,
                 recent_logs=[],
-                metadata={},
+                metadata=metadata,
             )
             self._agents[agent_id] = agent
-
-            try:
-                handle = await self.shell_executor.start(
-                    agent_id=agent_id,
-                    agent_type=request.type,
-                    workspace=str(workspace),
-                    launch_profile=request.launch_profile,
-                    initial_prompt=request.initial_prompt,
-                )
-            except Exception as exc:
-                agent.state = AgentState.FAILED
-                agent.updated_at = datetime.now(UTC)
-                self._complete_job(startup_job.id, JobState.FAILED, "Launch failed", error=str(exc))
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-
-            agent.pid = handle.pid
-            agent.recent_logs = self.shell_executor.recent_logs(handle, self.settings.default_log_limit)
-            self._handles[agent_id] = handle
-            self._log_offsets[agent_id] = len(handle.logs)
-            self._process_monitors[agent_id] = asyncio.create_task(self._monitor_process(agent_id))
             await self._append_audit(
                 action="launch_agent",
                 target_type="agent",
                 target_id=agent_id,
                 status=AuditStatus.ACCEPTED,
-                message="Launch command accepted by supervisor",
+                message="Launch command accepted by supervisor" if self._has_available_worker_slot() else "Launch queued; waiting for worker capacity",
                 details={"launch_profile": request.launch_profile, "workspace": str(workspace)},
             )
-            await self._publish("agent.starting", agent=agent, job=startup_job, message="Agent process launched")
-            asyncio.create_task(self._complete_process_launch(agent_id))
+            if self._has_available_worker_slot():
+                await self._launch_process_agent(agent, raise_on_failure=True)
+            else:
+                self._pending_queue.append(agent_id)
+                await self._publish("agent.pending", agent=agent, job=startup_job, message="Launch queued; waiting for worker capacity")
             return await self.get_agent(agent_id)
 
     async def stop_agent(self, agent_id: str) -> AgentDetailResponse:
@@ -256,7 +318,7 @@ class AgentManager:
             await self._publish("agent.stopping", agent=agent, message="Stopping agent")
             executor = self._executor_for(agent)
             await executor.stop(handle)
-            if agent.current_job_id:
+            if agent.current_job_id and self._jobs[agent.current_job_id].state in {JobState.QUEUED, JobState.RUNNING}:
                 self._complete_job(agent.current_job_id, JobState.CANCELLED, "Stopped by supervisor")
             await self._finalize_stop(agent_id)
             return await self.get_agent(agent_id)
@@ -281,38 +343,17 @@ class AgentManager:
 
             restart_job = self._create_job(agent_id=agent_id, kind=JobKind.RESTART, input_text=request.reason or "restart agent")
             if relaunch_profile and relaunch_workspace:
-                now = datetime.now(UTC)
-                restart_job.state = JobState.RUNNING
-                restart_job.started_at = now
-                restart_job.updated_at = now
-                agent.state = AgentState.STARTING
+                agent.state = AgentState.PENDING
                 agent.pid = None
-                agent.worker_id = self._allocate_worker_id()
+                agent.worker_id = None
                 agent.current_job_id = restart_job.id
                 agent.current_task = request.reason
-                agent.started_at = now
-                agent.updated_at = now
-                try:
-                    handle = await self.shell_executor.start(
-                        agent_id=agent_id,
-                        agent_type=agent.type,
-                        workspace=relaunch_workspace,
-                        launch_profile=relaunch_profile,
-                        initial_prompt=request.reason,
-                    )
-                except Exception as exc:
-                    agent.state = AgentState.FAILED
-                    agent.updated_at = datetime.now(UTC)
-                    self._complete_job(restart_job.id, JobState.FAILED, "Restart failed", error=str(exc))
-                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-
-                agent.pid = handle.pid
-                agent.recent_logs = self.shell_executor.recent_logs(handle, self.settings.default_log_limit)
-                self._handles[agent_id] = handle
-                self._log_offsets[agent_id] = len(handle.logs)
-                self._process_monitors[agent_id] = asyncio.create_task(self._monitor_process(agent_id))
-                await self._publish("agent.starting", agent=agent, job=restart_job, message="Agent process restarting")
-                asyncio.create_task(self._complete_process_launch(agent_id))
+                agent.updated_at = datetime.now(UTC)
+                if self._has_available_worker_slot():
+                    await self._launch_process_agent(agent, raise_on_failure=True)
+                else:
+                    self._pending_queue.append(agent_id)
+                    await self._publish("agent.pending", agent=agent, job=restart_job, message="Agent queued for restart")
             else:
                 agent.state = AgentState.PENDING
                 agent.pid = None
@@ -338,6 +379,15 @@ class AgentManager:
         if handle is None:
             return LogsResponse(agent_id=agent_id, logs=agent.recent_logs[-(limit or self.settings.default_log_limit) :])
         return LogsResponse(agent_id=agent_id, logs=self._executor_for(agent).recent_logs(handle, limit or self.settings.default_log_limit))
+
+    async def get_agent_events(self, agent_id: str, limit: int = 100) -> AgentEventsResponse:
+        self._require_agent(agent_id)
+        history = list(self._agent_event_history.get(agent_id, deque()))
+        return AgentEventsResponse(agent_id=agent_id, events=history[-limit:])
+
+    async def get_agent_metrics(self, agent_id: str) -> AgentMetricsResponse:
+        agent = self._require_agent(agent_id)
+        return AgentMetricsResponse(agent_id=agent_id, status=self._agent_runtime_status(agent))
 
     async def get_audit_log(self, limit: int = 100) -> AuditLogResponse:
         return AuditLogResponse(entries=self._audits[-limit:])
@@ -389,12 +439,15 @@ class AgentManager:
         return job
 
     async def _schedule_pending_agents(self) -> None:
-        while self._pending_queue and self.machine.worker_pool.idle_workers > 0:
+        while self._pending_queue and self._has_available_worker_slot():
             agent_id = self._pending_queue.popleft()
             agent = self._agents.get(agent_id)
             if agent is None or agent.state != AgentState.PENDING:
                 continue
-            await self._launch_mock_agent(agent)
+            if agent.launch_profile:
+                await self._launch_process_agent(agent)
+            else:
+                await self._launch_mock_agent(agent)
         await self._refresh_machine()
 
     async def _launch_mock_agent(self, agent: AgentRecord) -> None:
@@ -437,6 +490,24 @@ class AgentManager:
             agent = self._agents.get(agent_id)
             if agent is None or agent.state != AgentState.STARTING:
                 return
+            handle = self._handles.get(agent_id)
+            if handle is None:
+                agent.state = AgentState.FAILED
+                agent.updated_at = datetime.now(UTC)
+                if agent.current_job_id:
+                    self._complete_job(agent.current_job_id, JobState.FAILED, "Agent failed to start", error="Agent process was not available after launch")
+                await self._publish("agent.failed", agent=agent, message="Agent process was not available after launch")
+                return
+            if handle.finished_at is not None:
+                error_message = self._classify_launch_error(self._extract_runtime_error(handle))
+                agent.state = AgentState.FAILED
+                agent.updated_at = datetime.now(UTC)
+                if agent.current_job_id:
+                    self._complete_job(agent.current_job_id, JobState.FAILED, "Agent failed to start", error=error_message)
+                await self._publish_new_logs(agent_id)
+                await self._publish("agent.failed", agent=agent, message=error_message)
+                self._handles.pop(agent_id, None)
+                return
             initial_prompt = agent.current_task
             agent.state = AgentState.IDLE
             agent.updated_at = datetime.now(UTC)
@@ -455,6 +526,57 @@ class AgentManager:
                         status=AuditStatus.REJECTED,
                         message=str(exc.detail),
                     )
+
+    async def _launch_process_agent(self, agent: AgentRecord, raise_on_failure: bool = False) -> None:
+        launch_request = self._launch_request_from_agent(agent)
+        launch_profile = str(launch_request.get("launch_profile") or agent.launch_profile or "")
+        workspace = str(launch_request.get("workspace") or agent.workspace or "")
+        initial_prompt = agent.current_task
+        now = datetime.now(UTC)
+        startup_job = self._jobs.get(agent.current_job_id) if agent.current_job_id else None
+        if startup_job:
+            startup_job.state = JobState.RUNNING
+            startup_job.started_at = now
+            startup_job.updated_at = now
+        agent.state = AgentState.STARTING
+        agent.worker_id = self._allocate_worker_id()
+        agent.started_at = agent.started_at or now
+        agent.updated_at = now
+        try:
+            handle = await self.runtime_executor.start(
+                agent_id=agent.id,
+                agent_type=agent.type,
+                workspace=workspace,
+                launch_profile=launch_profile,
+                initial_prompt=initial_prompt,
+            )
+        except Exception as exc:
+            agent.state = AgentState.FAILED
+            agent.worker_id = None
+            agent.updated_at = datetime.now(UTC)
+            error_message = self._classify_launch_error(str(exc))
+            if startup_job:
+                self._complete_job(startup_job.id, JobState.FAILED, "Launch failed", error=error_message)
+            await self._append_audit(
+                action="launch_agent",
+                target_type="agent",
+                target_id=agent.id,
+                status=AuditStatus.REJECTED,
+                message=error_message,
+                details={"launch_profile": launch_profile, "workspace": workspace},
+            )
+            await self._publish("agent.failed", agent=agent, job=startup_job, message=error_message)
+            if raise_on_failure:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error_message) from exc
+            return
+
+        agent.pid = handle.pid
+        agent.recent_logs = self.runtime_executor.recent_logs(handle, self.settings.default_log_limit)
+        self._handles[agent.id] = handle
+        self._log_offsets[agent.id] = len(handle.logs)
+        self._process_monitors[agent.id] = asyncio.create_task(self._monitor_process(agent.id))
+        await self._publish("agent.starting", agent=agent, job=startup_job, message="Agent process launched")
+        asyncio.create_task(self._complete_process_launch(agent.id))
 
     async def _run_job(self, agent_id: str, job_id: str, input_text: str) -> None:
         try:
@@ -537,22 +659,29 @@ class AgentManager:
                 await self._publish_new_logs(agent_id)
                 agent.pid = handle.pid
                 if handle.finished_at is not None and agent.state not in {AgentState.STOPPED, AgentState.FAILED}:
-                    agent.state = AgentState.STOPPED if (handle.exit_code or 0) == 0 else AgentState.FAILED
+                    if agent.state == AgentState.STARTING:
+                        agent.state = AgentState.FAILED
+                    else:
+                        agent.state = AgentState.STOPPED if (handle.exit_code or 0) == 0 else AgentState.FAILED
                     agent.pid = None
+                    agent.worker_id = None
+                    agent.current_task = None
                     agent.updated_at = datetime.now(UTC)
                     if agent.current_job_id and self._jobs[agent.current_job_id].state == JobState.RUNNING:
+                        error_message = self._classify_launch_error(self._extract_runtime_error(handle))
                         self._complete_job(
                             agent.current_job_id,
                             JobState.COMPLETED if agent.state == AgentState.STOPPED else JobState.FAILED,
                             "Process exited",
-                            error=None if agent.state == AgentState.STOPPED else f"Exit code {handle.exit_code}",
+                            error=None if agent.state == AgentState.STOPPED else error_message,
                         )
                     await self._publish(
                         "agent.stopped" if agent.state == AgentState.STOPPED else "agent.failed",
                         agent=agent,
-                        message=f"Process exited with code {handle.exit_code}",
+                        message="Process exited cleanly" if agent.state == AgentState.STOPPED else self._classify_launch_error(self._extract_runtime_error(handle)),
                     )
                     self._handles.pop(agent_id, None)
+                    await self._schedule_pending_agents()
                     return
 
     def _create_job(self, agent_id: str, kind: JobKind, input_text: str) -> JobRecord:
@@ -596,6 +725,191 @@ class AgentManager:
         if active >= self.settings.max_active_agents:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Maximum active agent limit reached on this machine")
 
+    def _has_available_worker_slot(self) -> bool:
+        busy = sum(
+            1
+            for agent in self._agents.values()
+            if agent.worker_id and agent.state in {AgentState.STARTING, AgentState.RUNNING, AgentState.IDLE, AgentState.STOPPING}
+        )
+        return busy < self.settings.mock_worker_capacity
+
+    def _build_launch_metadata(
+        self,
+        agent_type,
+        launch_profile: str,
+        workspace: str,
+        initial_prompt: str | None,
+    ) -> dict[str, object]:
+        return {
+            "launch_request": {
+                "type": agent_type.value if hasattr(agent_type, "value") else str(agent_type),
+                "launch_profile": launch_profile,
+                "workspace": workspace,
+                "initial_prompt_template": initial_prompt or "",
+            }
+        }
+
+    def _launch_request_from_agent(self, agent: AgentRecord) -> dict[str, object]:
+        launch_request = agent.metadata.get("launch_request", {})
+        return launch_request if isinstance(launch_request, dict) else {}
+
+    def _recent_jobs_for_agent(self, agent_id: str, limit: int = 8) -> list[JobRecord]:
+        jobs = [job for job in self._jobs.values() if job.agent_id == agent_id]
+        return sorted(jobs, key=lambda item: item.updated_at, reverse=True)[:limit]
+
+    def start_background_tasks(self) -> None:
+        if self._heartbeat_task is None or self._heartbeat_task.done():
+            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
+    async def stop_background_tasks(self) -> None:
+        if self._heartbeat_task is None:
+            return
+        self._heartbeat_task.cancel()
+        try:
+            await self._heartbeat_task
+        except asyncio.CancelledError:
+            pass
+        self._heartbeat_task = None
+
+    async def _heartbeat_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self.settings.monitoring_heartbeat_interval_seconds)
+            async with self._lock:
+                self._last_heartbeat_at = datetime.now(UTC)
+                machine_health = self._machine_health_status()
+                await self._publish("machine.heartbeat", machine_health=machine_health, message="Supervisor heartbeat")
+                for agent in self._agents.values():
+                    status_snapshot = self._agent_runtime_status(agent)
+                    previous = self._agent_monitor_state.get(agent.id)
+                    self._agent_monitor_state[agent.id] = status_snapshot.monitor_state
+                    if status_snapshot.stuck_indicator and previous != "stuck":
+                        await self._publish("agent.stuck", agent=agent, agent_status=status_snapshot, message=status_snapshot.warning_message or "Agent appears stalled")
+                    elif status_snapshot.warning_indicator and previous not in {"warning", "stuck"}:
+                        await self._publish("agent.warning", agent=agent, agent_status=status_snapshot, message=status_snapshot.warning_message or "Agent needs attention")
+                    elif previous in {"warning", "stuck"} and status_snapshot.monitor_state not in {"warning", "stuck"}:
+                        await self._publish("agent.recovered", agent=agent, agent_status=status_snapshot, message="Agent recovered")
+
+    def _machine_health_status(self) -> MachineHealthStatus:
+        statuses = [self._agent_runtime_status(agent) for agent in self._agents.values()]
+        warning_count = sum(1 for status in statuses if status.warning_indicator or status.stuck_indicator)
+        failed_count = sum(1 for agent in self._agents.values() if agent.state == AgentState.FAILED)
+        monitor_state = "healthy"
+        if failed_count > 0:
+            monitor_state = "warning"
+        if any(status.stuck_indicator for status in statuses):
+            monitor_state = "warning"
+        return MachineHealthStatus(
+            machine_id=self.machine.id,
+            machine_name=self.machine.name,
+            status=self.machine.status,
+            monitor_state=monitor_state,
+            last_heartbeat=self._last_heartbeat_at,
+            last_seen=self.machine.updated_at,
+            agents_total=len(self._agents),
+            agents_running=sum(1 for agent in self._agents.values() if agent.state in {AgentState.RUNNING, AgentState.IDLE}),
+            agents_failed=failed_count,
+            queued_jobs=sum(1 for job in self._jobs.values() if job.state == JobState.QUEUED),
+            warning_count=warning_count,
+            worker_pool=self.machine.worker_pool,
+            resources=self._machine_resource_usage(),
+        )
+
+    def _agent_runtime_status(self, agent: AgentRecord) -> AgentRuntimeStatus:
+        now = datetime.now(UTC)
+        handle = self._handles.get(agent.id)
+        last_heartbeat = self._coerce_datetime(agent.metadata.get("last_heartbeat_at")) or agent.updated_at
+        last_log_timestamp = None
+        if agent.recent_logs:
+            last_log_timestamp = agent.recent_logs[-1].timestamp
+        elif handle and handle.logs:
+            last_log_timestamp = handle.logs[-1].timestamp
+        elapsed_seconds = int((now - (agent.started_at or agent.updated_at)).total_seconds()) if (agent.started_at or agent.updated_at) else 0
+        silence_seconds = int((now - last_log_timestamp).total_seconds()) if last_log_timestamp else None
+        heartbeat_age_seconds = int((now - last_heartbeat).total_seconds()) if last_heartbeat else None
+        warning_indicator = False
+        stuck_indicator = False
+        warning_message = None
+        monitor_state = agent.state.value
+        if agent.state == AgentState.FAILED:
+            monitor_state = "failed"
+        elif agent.state == AgentState.RUNNING:
+            if silence_seconds is not None and silence_seconds >= self.settings.monitoring_stuck_after_seconds:
+                stuck_indicator = True
+                warning_indicator = True
+                monitor_state = "stuck"
+                warning_message = f"No logs for {silence_seconds}s while task is running"
+            elif silence_seconds is not None and silence_seconds >= self.settings.monitoring_warning_after_seconds:
+                warning_indicator = True
+                monitor_state = "warning"
+                warning_message = f"No logs for {silence_seconds}s while task is running"
+            elif heartbeat_age_seconds is not None and heartbeat_age_seconds >= self.settings.monitoring_warning_after_seconds:
+                warning_indicator = True
+                monitor_state = "warning"
+                warning_message = f"No supervisor heartbeat for {heartbeat_age_seconds}s"
+            else:
+                monitor_state = "running"
+        elif agent.state == AgentState.IDLE:
+            monitor_state = "idle"
+        resources = self._resource_usage(handle)
+        return AgentRuntimeStatus(
+            agent_id=agent.id,
+            machine_id=self.machine.id,
+            machine_name=self.machine.name,
+            type=agent.type,
+            state=agent.state,
+            monitor_state=monitor_state,
+            elapsed_seconds=elapsed_seconds,
+            last_heartbeat=last_heartbeat,
+            last_log_timestamp=last_log_timestamp,
+            warning_indicator=warning_indicator,
+            stuck_indicator=stuck_indicator,
+            warning_message=warning_message,
+            current_task=agent.current_task,
+            workspace=agent.workspace,
+            launch_profile=agent.launch_profile,
+            pid=agent.pid,
+            recent_logs=agent.recent_logs[-10:],
+            resources=resources,
+        )
+
+    def _resource_usage(self, handle: ProcessHandle | None):
+        from app.models import ResourceUsage
+
+        if handle is None or handle.pid is None or psutil is None:
+            return ResourceUsage()
+        try:
+            process = psutil.Process(handle.pid)
+            return ResourceUsage(
+                cpu_percent=process.cpu_percent(interval=0.0),
+                memory_mb=round(process.memory_info().rss / (1024 * 1024), 2),
+            )
+        except Exception:
+            return ResourceUsage()
+
+    def _machine_resource_usage(self):
+        from app.models import ResourceUsage
+
+        if psutil is None:
+            return ResourceUsage()
+        try:
+            return ResourceUsage(
+                cpu_percent=psutil.cpu_percent(interval=0.0),
+                memory_mb=round(psutil.virtual_memory().used / (1024 * 1024), 2),
+            )
+        except Exception:
+            return ResourceUsage()
+
+    @staticmethod
+    def _coerce_datetime(value: object) -> datetime | None:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        return None
+
     def _validate_workspace(self, workspace: str) -> Path:
         path = Path(workspace).expanduser().resolve()
         if not path.exists() or not path.is_dir():
@@ -605,6 +919,104 @@ class AgentManager:
             if not any(path == root or root in path.parents for root in allowed):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Workspace is outside allowed roots")
         return path
+
+    def _workspace_roots(self) -> list[Path]:
+        roots = [Path(root).expanduser().resolve() for root in self.settings.allowed_workspace_roots if root.strip()]
+        if not roots:
+            roots = [Path(workspace).expanduser().resolve() for workspace in self.settings.configured_workspaces if workspace.strip()]
+        return [root for root in roots if root.exists() and root.is_dir()]
+
+    def _discover_workspaces(self, root: Path) -> list[Path]:
+        candidates = [root]
+        max_depth = max(self.settings.workspace_discovery_depth, 0)
+        if max_depth > 0:
+            queue: deque[tuple[Path, int]] = deque([(root, 0)])
+            while queue:
+                current, depth = queue.popleft()
+                if depth >= max_depth:
+                    continue
+                try:
+                    children = list(current.iterdir())
+                except OSError:
+                    continue
+                for child in children:
+                    if not child.is_dir():
+                        continue
+                    if (child / ".git").exists():
+                        candidates.append(child)
+                    queue.append((child, depth + 1))
+        unique: dict[str, Path] = {}
+        for candidate in candidates:
+            try:
+                validated = self._validate_workspace(str(candidate))
+            except HTTPException:
+                continue
+            unique[str(validated)] = validated
+        return list(unique.values())
+
+    def _restore_state(self) -> None:
+        persisted = self.state_store.load()
+        if persisted is None:
+            return
+        self.machine = persisted.machine
+        now = datetime.now(UTC)
+        self.machine.status = "online"
+        self.machine.updated_at = now
+        self._agents = {agent.id: agent for agent in persisted.agents}
+        self._jobs = {job.id: job for job in persisted.jobs}
+        self._audits = persisted.audits[-self.settings.max_log_entries :]
+        for agent in self._agents.values():
+            if agent.state in {AgentState.PENDING, AgentState.STARTING, AgentState.RUNNING, AgentState.IDLE, AgentState.STOPPING}:
+                agent.state = AgentState.STOPPED
+                agent.pid = None
+                agent.worker_id = None
+                agent.current_task = None
+                agent.updated_at = now
+        for job in self._jobs.values():
+            if job.state in {JobState.QUEUED, JobState.RUNNING}:
+                job.state = JobState.FAILED
+                job.error = "Supervisor restarted before the task completed"
+                job.summary = "Interrupted by supervisor restart"
+                job.updated_at = now
+                job.finished_at = now
+                if job.started_at is None:
+                    job.started_at = job.created_at
+
+    async def _persist_state_locked(self) -> None:
+        self.state_store.save(
+            PersistedState(
+                machine=self.machine,
+                agents=list(self._agents.values()),
+                jobs=list(self._jobs.values()),
+                audits=self._audits[-self.settings.max_log_entries :],
+            )
+        )
+
+    @staticmethod
+    def _extract_runtime_error(handle: ProcessHandle) -> str:
+        error_logs = [log.message for log in handle.logs if log.stream in {"stderr", "system", "stdout"} and log.message.strip()]
+        return error_logs[-1] if error_logs else f"Process exited with code {handle.exit_code}"
+
+    @staticmethod
+    def _classify_launch_error(message: str) -> str:
+        lowered = message.lower()
+        if "not installed" in lowered or "not found on path" in lowered or "cli was not found" in lowered:
+            return message
+        if "workspace does not exist" in lowered or "not a directory" in lowered:
+            return "Invalid workspace: the selected directory does not exist or is not accessible"
+        if "outside allowed roots" in lowered:
+            return "Invalid workspace: the selected directory is outside the configured safe workspace roots"
+        if "must specify the gemini_api_key" in lowered or "local auth is missing" in lowered:
+            return "Gemini local auth is missing. Run gemini locally once or set GEMINI_API_KEY before starting the supervisor"
+        if "authentication" in lowered or "auth" in lowered or "login" in lowered:
+            return "Local CLI authentication is missing or expired on this machine"
+        if "maximum active agent limit reached" in lowered:
+            return "Maximum active agent limit reached on this machine"
+        if "no worker capacity available" in lowered:
+            return "No worker capacity available on this machine"
+        if "exit code" in lowered:
+            return f"Agent process exited immediately: {message}"
+        return message
 
     async def _refresh_machine(self) -> None:
         busy_workers = sum(
@@ -714,27 +1126,40 @@ class AgentManager:
         self,
         event: str,
         agent: AgentRecord | None = None,
+        agent_status: AgentRuntimeStatus | None = None,
         job: JobRecord | None = None,
         log=None,
         audit: AuditEntry | None = None,
+        machine_health: MachineHealthStatus | None = None,
         message: str | None = None,
     ) -> None:
         await self._refresh_machine()
-        await self.event_bus.publish(
-            SupervisorEvent(
-                event=event,
-                timestamp=datetime.now(UTC),
-                machine=self.machine,
-                agent=agent,
-                job=job,
-                log=log,
-                audit=audit,
-                message=message,
-            )
+        await self._persist_state_locked()
+        timestamp = datetime.now(UTC)
+        if agent is not None:
+            agent.metadata["last_heartbeat_at"] = timestamp.isoformat()
+            agent_status = agent_status or self._agent_runtime_status(agent)
+        machine_health = machine_health or self._machine_health_status()
+        emitted = SupervisorEvent(
+            event=event,
+            timestamp=timestamp,
+            machine=self.machine,
+            machine_health=machine_health,
+            agent=agent,
+            agent_status=agent_status,
+            job=job,
+            log=log,
+            audit=audit,
+            message=message,
         )
+        self._event_history.append(emitted)
+        if agent is not None:
+            history = self._agent_event_history.setdefault(agent.id, deque(maxlen=self.settings.max_log_entries))
+            history.append(emitted)
+        await self.event_bus.publish(emitted)
 
     def _executor_for(self, agent: AgentRecord):
-        return self.shell_executor if agent.launch_profile else self.mock_executor
+        return self.runtime_executor if agent.launch_profile else self.mock_executor
 
     def _require_agent(self, agent_id: str) -> AgentRecord:
         agent = self._agents.get(agent_id)

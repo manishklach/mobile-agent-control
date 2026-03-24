@@ -22,10 +22,12 @@ import com.example.agentcontrol.data.local.MachineStore
 import com.example.agentcontrol.data.repository.MachineRepository
 import com.example.agentcontrol.ui.navigation.Route
 import com.example.agentcontrol.ui.screens.AgentDetailScreen
+import com.example.agentcontrol.ui.screens.DashboardScreen
 import com.example.agentcontrol.ui.screens.LaunchAgentScreen
 import com.example.agentcontrol.ui.screens.MachineActivityScreen
 import com.example.agentcontrol.ui.screens.MachineDetailScreen
 import com.example.agentcontrol.ui.screens.MachinesScreen
+import com.example.agentcontrol.ui.screens.RunningAgentsScreen
 import com.example.agentcontrol.ui.screens.SettingsScreen
 import com.example.agentcontrol.ui.theme.AgentControlTheme
 import com.example.agentcontrol.ui.viewmodel.AppViewModel
@@ -56,10 +58,43 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                NavHost(navController = navController, startDestination = Route.Machines.value) {
+                NavHost(navController = navController, startDestination = Route.Dashboard.value) {
+                    composable(Route.Dashboard.value) {
+                        LaunchedEffect(navController.currentBackStackEntry?.destination?.route) {
+                            viewModel.loadMachines()
+                            viewModel.loadRunningAgents()
+                            viewModel.loadDashboardActivity()
+                        }
+                        DashboardScreen(
+                            machinesState = uiState.machines,
+                            runningAgentsState = uiState.runningAgents,
+                            activityState = uiState.dashboardActivity,
+                            actionMessage = uiState.actionMessage,
+                            actionError = uiState.actionError,
+                            onMachinesClick = { navController.navigate(Route.Machines.value) },
+                            onRunningAgentsClick = { navController.navigate(Route.RunningAgents.value) },
+                            onSettingsClick = { navController.navigate(Route.Settings.value) },
+                            onRefresh = {
+                                viewModel.loadMachines()
+                                viewModel.loadRunningAgents()
+                                viewModel.loadDashboardActivity()
+                            },
+                            onMachineClick = { machineId ->
+                                viewModel.selectMachine(machineId)
+                                navController.navigate("machine/$machineId")
+                            },
+                            onOpenAgent = { machineId, agentId ->
+                                viewModel.selectMachine(machineId)
+                                navController.navigate("machine/$machineId/agent/$agentId")
+                            },
+                            onQuickDispatch = { type, task -> viewModel.startAgentOnBestMachine(type, task) }
+                        )
+                    }
                     composable(Route.Machines.value) {
                         LaunchedEffect(navController.currentBackStackEntry?.destination?.route) {
                             viewModel.loadMachines()
+                            viewModel.loadRunningAgents()
+                            viewModel.loadDashboardActivity()
                         }
                         MachinesScreen(
                             state = uiState.machines,
@@ -69,9 +104,24 @@ class MainActivity : ComponentActivity() {
                                 viewModel.selectMachine(machineId)
                                 navController.navigate("machine/$machineId")
                             },
+                            onRunningAgentsClick = { navController.navigate(Route.RunningAgents.value) },
                             onSettingsClick = { navController.navigate(Route.Settings.value) },
                             onRefreshClick = { viewModel.loadMachines() },
                             onQuickDispatch = { type, task -> viewModel.startAgentOnBestMachine(type, task) }
+                        )
+                    }
+                    composable(Route.RunningAgents.value) {
+                        LaunchedEffect(Unit) {
+                            viewModel.loadRunningAgents()
+                        }
+                        RunningAgentsScreen(
+                            state = uiState.runningAgents,
+                            onBack = { navController.popBackStack() },
+                            onRefresh = { viewModel.loadRunningAgents() },
+                            onOpenAgent = { machineId, agentId ->
+                                viewModel.selectMachine(machineId)
+                                navController.navigate("machine/$machineId/agent/$agentId")
+                            }
                         )
                     }
                     composable(
@@ -99,11 +149,18 @@ class MainActivity : ComponentActivity() {
                             onLaunchAgent = { navController.navigate("machine/$machineId/launch") },
                             onStopAgent = { agentId -> viewModel.stopAgent(machineId, agentId) },
                             onRestartAgent = { agentId -> viewModel.restartAgent(machineId, agentId, "Restarted from machine dashboard") },
+                            onRelaunch = { type, launchProfile, workspace, initialPrompt ->
+                                viewModel.launchAgent(machineId, type, launchProfile, workspace, initialPrompt)
+                            },
+                            onRelaunchBest = { type, launchProfile, workspace, initialPrompt ->
+                                viewModel.launchAgentOnBestMachine(type, launchProfile, workspace, initialPrompt)
+                            },
                             onRefresh = {
                                 viewModel.loadMachineDetail(machineId)
                                 viewModel.loadAgents(machineId)
                                 viewModel.loadTasks(machineId)
                                 viewModel.loadAudit(machineId)
+                                viewModel.loadRunningAgents()
                             }
                         )
                     }
@@ -116,11 +173,13 @@ class MainActivity : ComponentActivity() {
                             viewModel.selectMachine(machineId)
                             viewModel.loadMachineDetail(machineId)
                             viewModel.loadLaunchProfiles(machineId)
+                            viewModel.loadWorkspaces(machineId)
                         }
                         LaunchedEffect(uiState.launchedAgentId) {
                             val launchedAgentId = uiState.launchedAgentId
+                            val launchedMachineId = uiState.launchedAgentMachineId ?: machineId
                             if (!launchedAgentId.isNullOrBlank()) {
-                                navController.navigate("machine/$machineId/agent/$launchedAgentId") {
+                                navController.navigate("machine/$launchedMachineId/agent/$launchedAgentId") {
                                     popUpTo("machine/$machineId/launch") { inclusive = true }
                                 }
                                 viewModel.clearLaunchNavigation()
@@ -133,15 +192,21 @@ class MainActivity : ComponentActivity() {
                         LaunchAgentScreen(
                             machineName = machineName,
                             profilesState = uiState.launchProfiles,
+                            workspacesState = uiState.workspaces,
+                            lastWorkspace = uiState.lastWorkspace,
                             actionError = uiState.actionError,
                             actionMessage = uiState.actionMessage,
                             onBack = { navController.popBackStack() },
                             onRefresh = {
                                 viewModel.loadMachineDetail(machineId)
                                 viewModel.loadLaunchProfiles(machineId)
+                                viewModel.loadWorkspaces(machineId)
                             },
                             onLaunch = { type, launchProfile, workspace, initialPrompt ->
                                 viewModel.launchAgent(machineId, type, launchProfile, workspace, initialPrompt)
+                            },
+                            onLaunchBestAvailable = { type, launchProfile, workspace, initialPrompt ->
+                                viewModel.launchAgentOnBestMachine(type, launchProfile, workspace, initialPrompt)
                             }
                         )
                     }
@@ -180,6 +245,8 @@ class MainActivity : ComponentActivity() {
                         }
                         AgentDetailScreen(
                             state = uiState.selectedAgent,
+                            metricsState = uiState.selectedAgentMetrics,
+                            eventsState = uiState.selectedAgentEvents,
                             liveEvents = uiState.liveEvents.filter { event ->
                                 event.agent?.id == agentId || event.job?.agentId == agentId
                             },

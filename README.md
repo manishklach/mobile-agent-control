@@ -1,15 +1,24 @@
 # Agent Control MVP
 
-The current implementation provides a machine-side supervisor backend plus an Android control client.
+Agent Control MVP is a vendor-neutral mobile control plane for terminal-native coding agents.
 
-The backend supervises in-memory agents, jobs, worker capacity, logs, and audit records. It supports both:
+The current implementation provides:
 
-- mock agents through `POST /agents/start`
-- safe local process launch through supervisor-approved launch profiles and `POST /agents/launch`
-- a real local Codex runner profile that executes prompts through the installed `codex` CLI
-- a real local Gemini runner profile that executes prompts through the installed `gemini` CLI
+- an Android operator console
+- a machine-side FastAPI supervisor
+- a vendor-neutral CLI runtime adapter layer
+
+Gemini CLI is the flagship default integration in the demo config and quickstart, while Codex CLI is implemented through the same adapter contract.
 
 For pre-release deployment, use Tailscale only as the private connectivity layer between the Android client and each machine supervisor. This is not the final product architecture.
+
+## Product Positioning
+
+- Mobile-first control plane for remotely launching, monitoring, and steering terminal-native coding agents
+- Machine supervisor owns local lifecycle, logs, worker capacity, and audit state
+- Runtime adapters isolate vendor-specific CLI launch, auth, and prompt execution behavior
+- Shared machine, agent, task, audit, and launch-profile models stay vendor-neutral
+- Gemini CLI is the default example runtime, but the architecture is designed for additional adapters such as Codex CLI, Copilot CLI, Hermes, or Microsoft-backed runtimes later
 
 ## Scope
 
@@ -20,7 +29,7 @@ For pre-release deployment, use Tailscale only as the private connectivity layer
 - job model
 - in-memory registry
 - mock executor
-- shell executor with safe launch profiles
+- CLI runtime executor with safe launch profiles
 - bearer token auth
 - websocket streaming for live state and logs
 - command audit log
@@ -44,6 +53,12 @@ Example machine base URLs for pre-release:
 ```text
 backend/
   app/
+    adapters/
+      base.py
+      gemini_cli.py
+      codex_cli.py
+      copilot_cli.py
+      registry.py
     api/
       deps.py
       routes.py
@@ -52,8 +67,9 @@ backend/
       config.py
     executors/
       base.py
+      cli_runtime_executor.py
+      cli_runtime_host.py
       mock_executor.py
-      shell_executor.py
     services/
       agent_manager.py
       event_bus.py
@@ -67,10 +83,16 @@ backend/
 
 - `GET /health`
 - `GET /machines/self`
+- `GET /machines`
+- `GET /machines/{id}/health`
 - `GET /agents`
+- `GET /agents/running`
 - `GET /agents/{id}`
+- `GET /agents/{id}/events`
+- `GET /agents/{id}/metrics`
 - `POST /agents/start`
 - `GET /launch-profiles`
+- `GET /workspaces`
 - `POST /agents/launch`
 - `POST /agents/{id}/stop`
 - `POST /agents/{id}/restart`
@@ -84,31 +106,31 @@ backend/
 
 ## Example Requests
 
-Start a mock Codex agent:
+Start a mock Gemini agent:
 
 ```powershell
 curl -X POST http://localhost:8000/agents/start `
   -H "Authorization: Bearer replace-with-a-random-token" `
   -H "Content-Type: application/json" `
-  -d "{\"type\":\"codex\",\"initial_task\":\"Boot a coding agent for repo triage\"}"
+  -d "{\"type\":\"gemini\",\"initial_task\":\"Boot a coding agent for repo triage\"}"
 ```
 
-Launch a supervised local Codex process with the real Codex CLI runner:
+Launch a supervised local Gemini process with the real Gemini CLI adapter:
+
+```powershell
+curl -X POST http://localhost:8000/agents/launch `
+  -H "Authorization: Bearer 0118" `
+  -H "Content-Type: application/json" `
+  -d "{\"type\":\"gemini\",\"launch_profile\":\"gemini-safe-default\",\"workspace\":\"C:\\Users\\ManishKL\\Documents\\Playground\",\"initial_prompt\":\"Summarize the repo and confirm the control plane is connected\"}"
+```
+
+Launch a supervised local Codex process with the Codex CLI adapter:
 
 ```powershell
 curl -X POST http://localhost:8000/agents/launch `
   -H "Authorization: Bearer 0118" `
   -H "Content-Type: application/json" `
   -d "{\"type\":\"codex\",\"launch_profile\":\"codex-safe-default\",\"workspace\":\"C:\\Users\\ManishKL\\Documents\\Playground\",\"initial_prompt\":\"Print startup status\"}"
-```
-
-Launch a supervised local Gemini process with the real Gemini CLI runner:
-
-```powershell
-curl -X POST http://localhost:8000/agents/launch `
-  -H "Authorization: Bearer 0118" `
-  -H "Content-Type: application/json" `
-  -d "{\"type\":\"gemini\",\"launch_profile\":\"gemini-safe-default\",\"workspace\":\"C:\\Users\\ManishKL\\Documents\\Playground\",\"initial_prompt\":\"Print startup status\"}"
 ```
 
 Submit a task:
@@ -148,11 +170,20 @@ Connect to `ws://localhost:8000/ws` with either:
 Event payloads may include:
 
 - `machine`
+- `machine_health`
 - `agent`
+- `agent_status`
 - `job`
 - `log`
 - `audit`
 - `message`
+
+Monitoring highlights:
+
+- The Android app includes a cross-machine `Running Agents` screen.
+- Machine cards surface warning counts, heartbeat, worker usage, and offline state.
+- Agent detail now shows elapsed time, last heartbeat, last log time, recent logs, recent events, and warning/stuck indicators.
+- Stuck detection is heuristic-based: running agents with no logs for a configured interval are promoted to `warning`, then `stuck`.
 
 ## Local Run
 
@@ -178,6 +209,21 @@ gemini -p "Reply with exactly: hello from gemini" --output-format json
 ```
 
 Once that succeeds locally, the supervisor can launch Gemini through `gemini-safe-default`.
+
+Adapter architecture:
+
+- `CliAgentRuntimeAdapter`: vendor-neutral interface for terminal-native runtimes
+- `GeminiCliAdapter`: default example adapter and demo path
+- `CodexCliAdapter`: alternate real CLI adapter
+- `CopilotCliAdapter`: registered adapter placeholder for future activation
+- `CliRuntimeExecutor`: supervisor-facing executor that delegates all vendor logic to adapters
+- `cli_runtime_host.py`: generic runtime host used by all CLI adapters
+
+Workspace discovery:
+
+- Configure safe workspace roots with `AGENT_CONTROL_ALLOWED_WORKSPACE_ROOTS`
+- Optionally configure preferred picker entries with `AGENT_CONTROL_CONFIGURED_WORKSPACES`
+- The Android app now loads these from `GET /workspaces` and remembers the last-used workspace per machine
 
 ## Pre-Release Deployment With Tailscale
 
@@ -208,12 +254,14 @@ Planned migration path:
 
 ## Notes
 
-- `shell_executor.py` launches only configured safe profiles from `backend/config/launch_profiles.json`.
+- `cli_runtime_executor.py` launches only configured safe profiles from `backend/config/launch_profiles.json`.
 - Worker scaling and pause/resume semantics are intentionally deferred.
 - All state is in memory and resets on restart.
+- Recent agents, tasks, and audit entries are now persisted locally to `backend/data/supervisor_state.json`.
 - Tailscale is a temporary pre-release transport layer only.
-- `codex-safe-default` now runs a supervised local Codex CLI runner and supports prompts from the Android app.
-- `gemini-safe-default` now runs a supervised local Gemini CLI runner and requires Gemini CLI to be installed and authenticated on the machine.
+- `gemini-safe-default` is the default sample runtime and uses `GeminiCliAdapter`.
+- `codex-safe-default` uses the same adapter architecture via `CodexCliAdapter`.
+- Vendor-specific auth and CLI detection now live in adapter modules instead of shared supervisor code paths.
 
 ## Minimal Test Checklist
 
@@ -222,10 +270,14 @@ Planned migration path:
 3. `POST /agents/start` returns an agent in `pending` or `starting`, then the websocket shows it becoming `idle`.
 4. `GET /launch-profiles` returns safe launch templates for `codex` and `gemini`.
 5. `POST /agents/launch` returns an agent with `pid`, `workspace`, and `launch_profile`, then the websocket shows it becoming `idle`.
-6. `POST /agents/{id}/prompt` on a launched agent appends stdin/stdout logs and keeps the process supervised.
-7. `POST /agents/{id}/restart` on a launched agent restarts the process using the same saved profile and workspace.
-8. `POST /agents/{id}/tasks` moves a mock agent to `running`, streams logs, then returns to `idle`.
-9. `POST /agents/{id}/stop` stops a pending or active agent and records an audit entry.
-10. `GET /agents/{id}/logs` returns recent logs for that agent.
-11. `GET /audit` shows accepted control commands.
-12. Requests without the bearer token return `401`.
+6. `GET /workspaces` returns safe configured/discovered workspace entries for the launch picker.
+7. `POST /agents/{id}/prompt` on a launched agent appends stdin/stdout logs and keeps the process supervised.
+8. `POST /agents/{id}/restart` on a launched agent restarts the process using the same saved profile and workspace.
+9. `POST /agents/{id}/tasks` moves a mock agent to `running`, streams logs, then returns to `idle`.
+10. `POST /agents/{id}/stop` stops a pending or active agent and records an audit entry.
+11. Restart the backend and confirm recent agents/tasks/audit entries are still listed.
+12. `GET /agents/{id}/logs` returns recent logs for that agent.
+13. `GET /audit` shows accepted control commands.
+14. Requests without the bearer token return `401`.
+15. `GET /machines`, `GET /machines/{id}/health`, `GET /agents/running`, `GET /agents/{id}/events`, and `GET /agents/{id}/metrics` return monitoring data.
+16. Websocket events include machine heartbeats, agent state updates, warning/stuck transitions, and live log entries.

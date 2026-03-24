@@ -4,14 +4,36 @@
 
 - Android app: remote control plane UI only
 - Machine-side FastAPI service: local supervisor and orchestration layer
-- Executor layer: launches or simulates concrete agent runtimes
+- Runtime adapter layer: vendor-neutral interface for terminal-native coding runtimes
+- Executor layer: launches or simulates concrete agent runtimes through adapters
 - Transport layer: pre-release direct private connectivity over Tailscale, later replaceable with a cloud-routed control plane
 
 ## Runtime Responsibilities
 
 - Android app registers machines and sends control commands
 - FastAPI supervisor owns machine-local state, lifecycle decisions, worker capacity, audit records, and websocket streaming
-- Executors translate supervisor commands into real agent actions; Phase 1 uses only a mock executor
+- CLI runtime adapters own vendor-specific CLI launch, auth, detection, and prompt execution behavior
+- Executors translate supervisor commands into real agent actions; Phase 1 uses only a mock executor, later phases add real adapter-backed runtimes
+
+## Adapter Pattern
+
+- Shared models remain vendor-neutral:
+  - machine
+  - agent instance
+  - task/job
+  - audit event
+  - launch profile
+- `CliAgentRuntimeAdapter` defines the contract for terminal-native vendor runtimes.
+- Each concrete adapter declares a capability set and implements:
+  - local CLI detection
+  - local auth checks
+  - prompt execution
+  - adapter-specific launch environment
+- Current concrete adapters:
+  - `GeminiCliAdapter`
+  - `CodexCliAdapter`
+  - `CopilotCliAdapter` placeholder
+- Gemini CLI is the flagship example runtime in launch profiles, quickstart docs, and sample flows.
 
 ## Transport Abstraction
 
@@ -52,6 +74,7 @@
 - Agent: id, type, state, current task, worker assignment, current job id, logs, metadata
 - Job: id, agent id, kind, state, input text, timestamps, summary, error
 - Audit entry: action, target, timestamp, status, message, details
+- Launch profile: neutral runtime metadata plus adapter binding and capability declarations
 
 ## State Model
 
@@ -78,7 +101,7 @@
 
 ### Phase 3
 
-- real executor layer for Codex and Gemini
+- real executor layer for Gemini-first and additional adapter-backed runtimes
 - restart semantics backed by real processes
 - richer task submission contracts
 - safer local command controls

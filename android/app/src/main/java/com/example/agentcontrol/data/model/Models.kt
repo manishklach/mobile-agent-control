@@ -4,6 +4,9 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
 data class MachineConfig(
@@ -22,6 +25,23 @@ data class HealthResponse(
     @SerialName("agents_total") val agentsTotal: Int,
     @SerialName("agents_running") val agentsRunning: Int,
     @SerialName("queued_jobs") val queuedJobs: Int
+)
+
+@Serializable
+data class MachineHealthStatus(
+    @SerialName("machine_id") val machineId: String,
+    @SerialName("machine_name") val machineName: String,
+    val status: String,
+    @SerialName("monitor_state") val monitorState: String,
+    @SerialName("last_heartbeat") val lastHeartbeat: String,
+    @SerialName("last_seen") val lastSeen: String,
+    @SerialName("agents_total") val agentsTotal: Int,
+    @SerialName("agents_running") val agentsRunning: Int,
+    @SerialName("agents_failed") val agentsFailed: Int,
+    @SerialName("queued_jobs") val queuedJobs: Int,
+    @SerialName("warning_count") val warningCount: Int,
+    @SerialName("worker_pool") val workerPool: WorkerPoolState,
+    val resources: ResourceUsage = ResourceUsage()
 )
 
 @Serializable
@@ -45,11 +65,17 @@ data class MachineRecord(
 )
 
 @Serializable
+data class MachineListResponse(
+    val machines: List<MachineRecord>
+)
+
+@Serializable
 data class MachineSelfResponse(
     val machine: MachineRecord,
     @SerialName("agents_total") val agentsTotal: Int,
     @SerialName("active_agents") val activeAgents: Int,
-    @SerialName("queued_jobs") val queuedJobs: Int
+    @SerialName("queued_jobs") val queuedJobs: Int,
+    @SerialName("max_active_agents") val maxActiveAgents: Int
 )
 
 @Serializable
@@ -109,13 +135,60 @@ data class AgentListResponse(val agents: List<AgentRecord>)
 @Serializable
 data class AgentDetailResponse(
     val agent: AgentRecord,
-    @SerialName("current_job") val currentJob: JobRecord? = null
+    @SerialName("current_job") val currentJob: JobRecord? = null,
+    @SerialName("latest_completed_job") val latestCompletedJob: JobRecord? = null,
+    @SerialName("recent_jobs") val recentJobs: List<JobRecord> = emptyList()
 )
 
 @Serializable
 data class LogsResponse(
     @SerialName("agent_id") val agentId: String,
     val logs: List<LogEntry>
+)
+
+@Serializable
+data class ResourceUsage(
+    @SerialName("cpu_percent") val cpuPercent: Double? = null,
+    @SerialName("memory_mb") val memoryMb: Double? = null
+)
+
+@Serializable
+data class AgentRuntimeStatus(
+    @SerialName("agent_id") val agentId: String,
+    @SerialName("machine_id") val machineId: String,
+    @SerialName("machine_name") val machineName: String,
+    val type: String,
+    val state: String,
+    @SerialName("monitor_state") val monitorState: String,
+    @SerialName("elapsed_seconds") val elapsedSeconds: Int,
+    @SerialName("last_heartbeat") val lastHeartbeat: String? = null,
+    @SerialName("last_log_timestamp") val lastLogTimestamp: String? = null,
+    @SerialName("warning_indicator") val warningIndicator: Boolean = false,
+    @SerialName("stuck_indicator") val stuckIndicator: Boolean = false,
+    @SerialName("warning_message") val warningMessage: String? = null,
+    @SerialName("current_task") val currentTask: String? = null,
+    val workspace: String? = null,
+    @SerialName("launch_profile") val launchProfile: String? = null,
+    val pid: Int? = null,
+    @SerialName("recent_logs") val recentLogs: List<LogEntry> = emptyList(),
+    val resources: ResourceUsage = ResourceUsage()
+)
+
+@Serializable
+data class RunningAgentsResponse(
+    val agents: List<AgentRuntimeStatus>
+)
+
+@Serializable
+data class AgentEventsResponse(
+    @SerialName("agent_id") val agentId: String,
+    val events: List<SupervisorEvent>
+)
+
+@Serializable
+data class AgentMetricsResponse(
+    @SerialName("agent_id") val agentId: String,
+    val status: AgentRuntimeStatus
 )
 
 @Serializable
@@ -138,14 +211,37 @@ data class StartAgentRequest(
 data class LaunchProfileRecord(
     val id: String,
     @SerialName("agent_type") val agentType: String,
+    @SerialName("adapter_id") val adapterId: String,
     val label: String,
     val description: String,
     @SerialName("workspace_required") val workspaceRequired: Boolean,
-    @SerialName("supports_initial_prompt") val supportsInitialPrompt: Boolean
+    @SerialName("supports_initial_prompt") val supportsInitialPrompt: Boolean,
+    val capabilities: RuntimeCapabilities = RuntimeCapabilities()
 )
 
 @Serializable
 data class LaunchProfilesResponse(val profiles: List<LaunchProfileRecord>)
+
+@Serializable
+data class RuntimeCapabilities(
+    @SerialName("supports_initial_prompt") val supportsInitialPrompt: Boolean = true,
+    @SerialName("supports_prompt_submission") val supportsPromptSubmission: Boolean = true,
+    @SerialName("supports_background_process") val supportsBackgroundProcess: Boolean = true,
+    @SerialName("supports_streaming_logs") val supportsStreamingLogs: Boolean = true,
+    @SerialName("requires_workspace") val requiresWorkspace: Boolean = true,
+    @SerialName("requires_local_auth") val requiresLocalAuth: Boolean = false,
+    @SerialName("supports_resume") val supportsResume: Boolean = false
+)
+
+@Serializable
+data class WorkspaceRecord(
+    val path: String,
+    val label: String,
+    val source: String
+)
+
+@Serializable
+data class WorkspacesResponse(val workspaces: List<WorkspaceRecord>)
 
 @Serializable
 data class LaunchAgentRequest(
@@ -166,7 +262,9 @@ data class SupervisorEvent(
     val event: String,
     val timestamp: String,
     val machine: MachineRecord? = null,
+    @SerialName("machine_health") val machineHealth: MachineHealthStatus? = null,
     val agent: AgentRecord? = null,
+    @SerialName("agent_status") val agentStatus: AgentRuntimeStatus? = null,
     val job: JobRecord? = null,
     val log: LogEntry? = null,
     val audit: AuditEntry? = null,
@@ -176,9 +274,32 @@ data class SupervisorEvent(
 data class MachineOverview(
     val config: MachineConfig,
     val health: HealthResponse? = null,
+    val machineHealth: MachineHealthStatus? = null,
     val machine: MachineRecord? = null,
     val error: String? = null,
     val lastSeenAt: String? = null
 ) {
     val isOnline: Boolean get() = health != null && machine != null
 }
+
+data class RunningAgentOverview(
+    val machine: MachineConfig,
+    val machineHealth: MachineHealthStatus?,
+    val status: AgentRuntimeStatus
+)
+
+data class DashboardActivityItem(
+    val machineId: String,
+    val machineName: String,
+    val timestamp: String,
+    val category: String,
+    val status: String,
+    val title: String,
+    val detail: String
+)
+
+val AgentRecord.launchRequest: JsonObject?
+    get() = metadata["launch_request"]?.jsonObject
+
+val AgentRecord.promptTemplate: String?
+    get() = launchRequest?.get("initial_prompt_template")?.jsonPrimitive?.contentOrNull?.ifBlank { null }
