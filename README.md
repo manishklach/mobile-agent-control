@@ -7,6 +7,7 @@ The backend supervises in-memory agents, jobs, worker capacity, logs, and audit 
 - mock agents through `POST /agents/start`
 - safe local process launch through supervisor-approved launch profiles and `POST /agents/launch`
 - a real local Codex runner profile that executes prompts through the installed `codex` CLI
+- a real local Gemini runner profile that executes prompts through the installed `gemini` CLI
 
 For pre-release deployment, use Tailscale only as the private connectivity layer between the Android client and each machine supervisor. This is not the final product architecture.
 
@@ -101,6 +102,15 @@ curl -X POST http://localhost:8000/agents/launch `
   -d "{\"type\":\"codex\",\"launch_profile\":\"codex-safe-default\",\"workspace\":\"C:\\Users\\ManishKL\\Documents\\Playground\",\"initial_prompt\":\"Print startup status\"}"
 ```
 
+Launch a supervised local Gemini process with the real Gemini CLI runner:
+
+```powershell
+curl -X POST http://localhost:8000/agents/launch `
+  -H "Authorization: Bearer 0118" `
+  -H "Content-Type: application/json" `
+  -d "{\"type\":\"gemini\",\"launch_profile\":\"gemini-safe-default\",\"workspace\":\"C:\\Users\\ManishKL\\Documents\\Playground\",\"initial_prompt\":\"Print startup status\"}"
+```
+
 Submit a task:
 
 ```powershell
@@ -157,6 +167,18 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 Launch profiles are loaded from `backend/config/launch_profiles.json`. The Codex profile is wired to a real local runner process. The phone never sends arbitrary shell commands.
 
+Gemini setup on the machine:
+
+1. Install Gemini CLI: `npm install -g @google/gemini-cli`
+2. Complete one-time local auth on the machine by running `gemini`
+3. Confirm non-interactive mode works with:
+
+```powershell
+gemini -p "Reply with exactly: hello from gemini" --output-format json
+```
+
+Once that succeeds locally, the supervisor can launch Gemini through `gemini-safe-default`.
+
 ## Pre-Release Deployment With Tailscale
 
 1. Install Tailscale on each machine that runs a supervisor.
@@ -191,7 +213,7 @@ Planned migration path:
 - All state is in memory and resets on restart.
 - Tailscale is a temporary pre-release transport layer only.
 - `codex-safe-default` now runs a supervised local Codex CLI runner and supports prompts from the Android app.
-- `gemini-safe-default` is still a placeholder profile and needs real Gemini CLI wiring later.
+- `gemini-safe-default` now runs a supervised local Gemini CLI runner and requires Gemini CLI to be installed and authenticated on the machine.
 
 ## Minimal Test Checklist
 

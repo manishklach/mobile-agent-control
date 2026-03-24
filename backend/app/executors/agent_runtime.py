@@ -84,7 +84,7 @@ def run_gemini(prompt: str, workspace: str) -> tuple[int, str]:
         "-p",
         prompt,
         "--output-format",
-        "text",
+        "json",
     ]
     process = subprocess.Popen(
         command,
@@ -116,7 +116,28 @@ def run_gemini(prompt: str, workspace: str) -> tuple[int, str]:
     exit_code = process.wait()
     stdout_thread.join(timeout=2)
     stderr_thread.join(timeout=2)
-    return exit_code, "\n".join(stdout_lines).strip()
+    stdout_text = "\n".join(stdout_lines).strip()
+    return exit_code, extract_gemini_summary(stdout_text)
+
+
+def extract_gemini_summary(stdout_text: str) -> str:
+    if not stdout_text:
+        return ""
+    stripped = stdout_text.strip()
+    candidates = [stripped]
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start != -1 and end > start:
+        candidates.append(stripped[start : end + 1])
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        response = payload.get("response")
+        if isinstance(response, str) and response.strip():
+            return response.strip()
+    return stripped
 
 
 def run_prompt(runner: str, prompt: str, workspace: str) -> tuple[int, str]:

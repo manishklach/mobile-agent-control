@@ -19,13 +19,14 @@
     {
       "id": "gemini-safe-default",
       "agent_type": "gemini",
-      "label": "Gemini Safe Default",
-      "description": "Launches a safe local stub process that simulates a Gemini supervisor session.",
+      "label": "Gemini Local CLI",
+      "description": "Launches a supervised local Gemini CLI runner. Prompts from the app execute through the installed gemini command.",
       "command": [
-        "python",
+        "{backend_python}",
         "-u",
-        "-c",
-        "import os,sys,time; print(f\"[{os.getenv('AGENT_PROFILE')}] workspace={os.getcwd()}\"); prompt=os.getenv('AGENT_INITIAL_PROMPT'); print(f\"initial_prompt={prompt}\" if prompt else 'initial_prompt=<none>'); sys.stdout.flush(); i=0\nwhile True:\n line=sys.stdin.readline()\n if not line:\n  time.sleep(0.2); i+=1\n  if i % 50 == 0: print('heartbeat:gemini'); sys.stdout.flush()\n  continue\n line=line.strip()\n if line.lower()=='exit': print('shutting down'); sys.stdout.flush(); break\n print(f'gemini received: {line}'); sys.stdout.flush()"
+        "{backend_root}/app/executors/agent_runtime.py",
+        "--runner",
+        "gemini"
       ],
       "env": {},
       "workspace_required": true,
