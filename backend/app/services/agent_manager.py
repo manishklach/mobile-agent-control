@@ -14,6 +14,8 @@ from uuid import uuid4
 
 from fastapi import HTTPException, status
 
+LAUNCH_TRANSITION_DELAY_SECONDS = 2.5
+
 from app.core.config import AppSettings, LaunchProfileConfig
 from app.executors.base import ProcessHandle
 from app.executors.cli_runtime_executor import CliRuntimeExecutor
@@ -737,21 +739,31 @@ class AgentManager:
             await self._publish("agent.idle", agent=agent, message="Agent is idle and ready")
 
     async def _complete_process_launch(self, agent_id: str) -> None:
-        await asyncio.sleep(1)
+        await asyncio.sleep(LAUNCH_TRANSITION_DELAY_SECONDS)
         async with self._lock:
             agent = self._agents.get(agent_id)
-            if agent is None or agent.state != AgentState.STARTING:
+            if agent is None:
+                await self._append_audit(action="_complete_process_launch", target_type="agent", target_id=agent_id, status=AuditStatus.REJECTED, message="Agent not found")
                 return
+            if agent.state != AgentState.STARTING:
+                await self._append_audit(action="_complete_process_launch", target_type="agent", target_id=agent_id, status=AuditStatus.REJECTED, message=f"Agent in unexpected state {agent.state}")
+                return
+            
+            await self._append_audit(action="_complete_process_launch", target_type="agent", target_id=agent_id, status=AuditStatus.ACCEPTED, message="Checking for process handle")
             handle = self._handles.get(agent_id)
             if handle is None:
+                await self._append_audit(action="_complete_process_launch", target_type="agent", target_id=agent_id, status=AuditStatus.REJECTED, message="Process handle not found")
                 agent.state = AgentState.FAILED
                 agent.updated_at = datetime.now(UTC)
                 if agent.current_job_id:
                     self._complete_job(agent.current_job_id, JobState.FAILED, "Agent failed to start", error="Agent process was not available after launch")
                 await self._publish("agent.failed", agent=agent, message="Agent process was not available after launch")
                 return
+
+            await self._append_audit(action="_complete_process_launch", target_type="agent", target_id=agent_id, status=AuditStatus.ACCEPTED, message="Checking if process exited")
             if handle.finished_at is not None:
                 error_message = self._classify_launch_error(self._extract_runtime_error(handle), agent=agent)
+                await self._append_audit(action="_complete_process_launch", target_type="agent", target_id=agent_id, status=AuditStatus.REJECTED, message=f"Process exited prematurely: {error_message}")
                 agent.state = AgentState.FAILED
                 agent.updated_at = datetime.now(UTC)
                 if agent.current_job_id:
@@ -760,6 +772,8 @@ class AgentManager:
                 await self._publish("agent.failed", agent=agent, message=error_message)
                 self._handles.pop(agent_id, None)
                 return
+            
+            await self._append_audit(action="_complete_process_launch", target_type="agent", target_id=agent_id, status=AuditStatus.ACCEPTED, message="Transitioning to IDLE")
             initial_prompt = agent.current_task
             agent.state = AgentState.IDLE
             agent.updated_at = datetime.now(UTC)
