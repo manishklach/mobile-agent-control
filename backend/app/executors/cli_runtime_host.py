@@ -43,8 +43,14 @@ def main() -> int:
     workspace = os.getcwd()
     profile = os.getenv("AGENT_PROFILE", adapter.adapter_id)
     initial_prompt = os.getenv("AGENT_INITIAL_PROMPT") or ""
+    runtime_model = os.getenv("AGENT_RUNTIME_MODEL") or None
+    command_name = os.getenv("AGENT_COMMAND_NAME") or None
     emit(f"[{profile}] workspace={workspace}")
     emit(f"initial_prompt={initial_prompt if initial_prompt else '<none>'}")
+    if runtime_model:
+        emit(f"runtime_model={runtime_model}")
+    if command_name:
+        emit(f"command_name={command_name}")
 
     for line in sys.stdin:
         job_id, prompt = parse_command(line)
@@ -54,13 +60,19 @@ def main() -> int:
         if not prompt:
             continue
         emit_event("job.started", job_id=job_id or None)
-        exit_code, summary = adapter.run_prompt(prompt, workspace)
+        exit_code, summary = adapter.run_prompt(
+            prompt,
+            workspace,
+            runtime_model=runtime_model,
+            command_name=command_name,
+        )
         if summary:
             emit(summary)
         if exit_code == 0:
             emit_event("job.completed", job_id=job_id or None, summary=summary)
         else:
-            emit_event("job.failed", job_id=job_id or None, summary=summary, error=f"{adapter.adapter_id} exited with code {exit_code}")
+            error = adapter.classify_runtime_error(summary or f"{adapter.adapter_id} exited with code {exit_code}", exit_code)
+            emit_event("job.failed", job_id=job_id or None, summary=summary, error=error)
 
     emit("stdin closed")
     return 0

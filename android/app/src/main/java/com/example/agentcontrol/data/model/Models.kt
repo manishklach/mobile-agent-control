@@ -41,7 +41,10 @@ data class MachineHealthStatus(
     @SerialName("queued_jobs") val queuedJobs: Int,
     @SerialName("warning_count") val warningCount: Int,
     @SerialName("worker_pool") val workerPool: WorkerPoolState,
-    val resources: ResourceUsage = ResourceUsage()
+    val resources: ResourceUsage = ResourceUsage(),
+    @SerialName("mcp_server_count") val mcpServerCount: Int = 0,
+    @SerialName("mcp_healthy_count") val mcpHealthyCount: Int = 0,
+    @SerialName("adapter_warnings") val adapterWarnings: List<String> = emptyList()
 )
 
 @Serializable
@@ -98,6 +101,11 @@ data class AgentRecord(
     @SerialName("updated_at") val updatedAt: String,
     @SerialName("worker_id") val workerId: String? = null,
     @SerialName("current_job_id") val currentJobId: String? = null,
+    @SerialName("runtime_model") val runtimeModel: String? = null,
+    @SerialName("command_name") val commandName: String? = null,
+    @SerialName("last_output_at") val lastOutputAt: String? = null,
+    @SerialName("mcp_enabled") val mcpEnabled: Boolean = false,
+    @SerialName("mcp_servers") val mcpServers: List<String> = emptyList(),
     @SerialName("recent_logs") val recentLogs: List<LogEntry> = emptyList(),
     val metadata: JsonObject = JsonObject(emptyMap())
 )
@@ -169,6 +177,11 @@ data class AgentRuntimeStatus(
     @SerialName("current_task") val currentTask: String? = null,
     val workspace: String? = null,
     @SerialName("launch_profile") val launchProfile: String? = null,
+    @SerialName("runtime_model") val runtimeModel: String? = null,
+    @SerialName("command_name") val commandName: String? = null,
+    @SerialName("last_output_at") val lastOutputAt: String? = null,
+    @SerialName("mcp_enabled") val mcpEnabled: Boolean = false,
+    @SerialName("mcp_servers") val mcpServers: List<String> = emptyList(),
     val pid: Int? = null,
     @SerialName("recent_logs") val recentLogs: List<LogEntry> = emptyList(),
     val resources: ResourceUsage = ResourceUsage()
@@ -216,7 +229,8 @@ data class LaunchProfileRecord(
     val description: String,
     @SerialName("workspace_required") val workspaceRequired: Boolean,
     @SerialName("supports_initial_prompt") val supportsInitialPrompt: Boolean,
-    val capabilities: RuntimeCapabilities = RuntimeCapabilities()
+    val capabilities: RuntimeCapabilities = RuntimeCapabilities(),
+    val metadata: JsonObject = JsonObject(emptyMap())
 )
 
 @Serializable
@@ -230,7 +244,10 @@ data class RuntimeCapabilities(
     @SerialName("supports_streaming_logs") val supportsStreamingLogs: Boolean = true,
     @SerialName("requires_workspace") val requiresWorkspace: Boolean = true,
     @SerialName("requires_local_auth") val requiresLocalAuth: Boolean = false,
-    @SerialName("supports_resume") val supportsResume: Boolean = false
+    @SerialName("supports_resume") val supportsResume: Boolean = false,
+    @SerialName("supports_command_templates") val supportsCommandTemplates: Boolean = false,
+    @SerialName("supports_mcp") val supportsMcp: Boolean = false,
+    @SerialName("supports_model_selection") val supportsModelSelection: Boolean = false
 )
 
 @Serializable
@@ -248,7 +265,79 @@ data class LaunchAgentRequest(
     val type: String,
     @SerialName("launch_profile") val launchProfile: String,
     val workspace: String,
-    @SerialName("initial_prompt") val initialPrompt: String? = null
+    @SerialName("initial_prompt") val initialPrompt: String? = null,
+    @SerialName("runtime_model") val runtimeModel: String? = null,
+    @SerialName("command_name") val commandName: String? = null
+)
+
+@Serializable
+data class RuntimeFeatureStatus(
+    val available: Boolean,
+    val message: String? = null
+)
+
+@Serializable
+data class RuntimeAdapterStatus(
+    @SerialName("adapter_id") val adapterId: String,
+    @SerialName("agent_type") val agentType: String,
+    val label: String,
+    val installed: RuntimeFeatureStatus,
+    val auth: RuntimeFeatureStatus,
+    val version: String? = null,
+    @SerialName("binary_path") val binaryPath: String? = null,
+    val capabilities: RuntimeCapabilities = RuntimeCapabilities(),
+    val warnings: List<String> = emptyList()
+)
+
+@Serializable
+data class RuntimeAdapterRecord(
+    @SerialName("adapter_id") val adapterId: String,
+    @SerialName("agent_type") val agentType: String,
+    val label: String,
+    val capabilities: RuntimeCapabilities = RuntimeCapabilities(),
+    val status: RuntimeAdapterStatus
+)
+
+@Serializable
+data class RuntimeAdaptersResponse(val adapters: List<RuntimeAdapterRecord>)
+
+@Serializable
+data class RuntimeAdapterStatusResponse(val adapter: RuntimeAdapterRecord)
+
+@Serializable
+data class SlashCommandRecord(
+    val name: String,
+    val description: String? = null,
+    val scope: String,
+    val path: String,
+    val source: String,
+    val managed: Boolean = false,
+    @SerialName("prompt_preview") val promptPreview: String? = null
+)
+
+@Serializable
+data class SlashCommandsResponse(
+    @SerialName("adapter_id") val adapterId: String,
+    val commands: List<SlashCommandRecord>
+)
+
+@Serializable
+data class McpServerRecord(
+    val name: String,
+    val scope: String,
+    val transport: String,
+    val health: String,
+    val enabled: Boolean = true,
+    val command: String? = null,
+    val endpoint: String? = null,
+    val description: String? = null,
+    val warning: String? = null
+)
+
+@Serializable
+data class McpServersResponse(
+    @SerialName("machine_id") val machineId: String,
+    val servers: List<McpServerRecord>
 )
 
 @Serializable
@@ -288,6 +377,12 @@ data class RunningAgentOverview(
     val status: AgentRuntimeStatus
 )
 
+data class LaunchSupport(
+    val adapter: RuntimeAdapterRecord? = null,
+    val commands: List<SlashCommandRecord> = emptyList(),
+    val mcpServers: List<McpServerRecord> = emptyList()
+)
+
 data class DashboardActivityItem(
     val machineId: String,
     val machineName: String,
@@ -303,3 +398,9 @@ val AgentRecord.launchRequest: JsonObject?
 
 val AgentRecord.promptTemplate: String?
     get() = launchRequest?.get("initial_prompt_template")?.jsonPrimitive?.contentOrNull?.ifBlank { null }
+
+val AgentRecord.runtimeSummary: String?
+    get() = listOfNotNull(runtimeModel, commandName?.let { "/$it" }).joinToString(" • ").ifBlank { null }
+
+val LaunchProfileRecord.defaultModel: String?
+    get() = metadata["default_model"]?.jsonPrimitive?.contentOrNull?.ifBlank { null }

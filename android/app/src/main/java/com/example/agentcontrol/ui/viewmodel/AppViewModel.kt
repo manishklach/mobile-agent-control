@@ -10,6 +10,7 @@ import com.example.agentcontrol.data.model.AuditEntry
 import com.example.agentcontrol.data.model.DashboardActivityItem
 import com.example.agentcontrol.data.model.JobRecord
 import com.example.agentcontrol.data.model.LaunchAgentRequest
+import com.example.agentcontrol.data.model.LaunchSupport
 import com.example.agentcontrol.data.model.LaunchProfileRecord
 import com.example.agentcontrol.data.model.MachineHealthStatus
 import com.example.agentcontrol.data.model.MachineOverview
@@ -37,6 +38,7 @@ data class AppUiState(
     val tasks: UiState<List<JobRecord>> = UiState.Loading,
     val audit: UiState<List<AuditEntry>> = UiState.Loading,
     val launchProfiles: UiState<List<LaunchProfileRecord>> = UiState.Loading,
+    val launchSupport: UiState<LaunchSupport> = UiState.Loading,
     val workspaces: UiState<List<WorkspaceRecord>> = UiState.Loading,
     val runningAgents: UiState<List<RunningAgentOverview>> = UiState.Loading,
     val dashboardActivity: UiState<List<DashboardActivityItem>> = UiState.Loading,
@@ -205,6 +207,23 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
         }
     }
 
+    fun loadLaunchSupport(machineId: String, adapterId: String, workspace: String?) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(launchSupport = UiState.Loading) }
+            runCatching {
+                LaunchSupport(
+                    adapter = repository.runtimeAdapter(machineId, adapterId, workspace).adapter,
+                    commands = repository.slashCommands(machineId, adapterId, workspace).commands,
+                    mcpServers = repository.machineMcp(machineId, workspace).servers
+                )
+            }.onSuccess { support ->
+                _uiState.update { it.copy(launchSupport = UiState.Success(support), actionError = null) }
+            }.onFailure { error ->
+                _uiState.update { it.copy(launchSupport = UiState.Error(repository.userMessage(error))) }
+            }
+        }
+    }
+
     fun loadWorkspaces(machineId: String) {
         viewModelScope.launch {
             _uiState.update { it.copy(workspaces = UiState.Loading, lastWorkspace = repository.lastWorkspace(machineId)) }
@@ -239,7 +258,15 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
         }
     }
 
-    fun launchAgent(machineId: String, type: String, launchProfile: String, workspace: String, initialPrompt: String?) {
+    fun launchAgent(
+        machineId: String,
+        type: String,
+        launchProfile: String,
+        workspace: String,
+        initialPrompt: String?,
+        runtimeModel: String? = null,
+        commandName: String? = null
+    ) {
         if (workspace.isBlank()) {
             _uiState.update { it.copy(actionError = "Workspace is required", actionMessage = null) }
             return
@@ -252,7 +279,9 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
                         type = type,
                         launchProfile = launchProfile,
                         workspace = workspace,
-                        initialPrompt = initialPrompt?.takeIf { it.isNotBlank() }
+                        initialPrompt = initialPrompt?.takeIf { it.isNotBlank() },
+                        runtimeModel = runtimeModel?.takeIf { it.isNotBlank() },
+                        commandName = commandName?.takeIf { it.isNotBlank() }
                     )
                 )
             }.onSuccess { response ->
@@ -274,7 +303,14 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
         }
     }
 
-    fun launchAgentOnBestMachine(type: String, launchProfile: String, workspace: String, initialPrompt: String?) {
+    fun launchAgentOnBestMachine(
+        type: String,
+        launchProfile: String,
+        workspace: String,
+        initialPrompt: String?,
+        runtimeModel: String? = null,
+        commandName: String? = null
+    ) {
         if (workspace.isBlank()) {
             _uiState.update { it.copy(actionError = "Workspace is required", actionMessage = null) }
             return
@@ -286,7 +322,9 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
                         type = type,
                         launchProfile = launchProfile,
                         workspace = workspace,
-                        initialPrompt = initialPrompt?.takeIf { it.isNotBlank() }
+                        initialPrompt = initialPrompt?.takeIf { it.isNotBlank() },
+                        runtimeModel = runtimeModel?.takeIf { it.isNotBlank() },
+                        commandName = commandName?.takeIf { it.isNotBlank() }
                     )
                 )
             }.onSuccess { result ->

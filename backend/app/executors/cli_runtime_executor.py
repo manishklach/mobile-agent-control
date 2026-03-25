@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -33,6 +34,8 @@ class CliRuntimeExecutor(Executor):
         workspace: str | None = None,
         launch_profile: str | None = None,
         initial_prompt: str | None = None,
+        runtime_model: str | None = None,
+        command_name: str | None = None,
     ) -> ProcessHandle:
         if launch_profile is None:
             raise ValueError("Launch profile is required")
@@ -52,6 +55,11 @@ class CliRuntimeExecutor(Executor):
         env["AGENT_PROFILE"] = profile.id
         env["AGENT_INITIAL_PROMPT"] = initial_prompt or ""
         env["AGENT_ADAPTER_ID"] = adapter.adapter_id
+        env["AGENT_RUNTIME_MODEL"] = runtime_model or ""
+        env["AGENT_COMMAND_NAME"] = command_name or ""
+        existing_pythonpath = env.get("PYTHONPATH", "")
+        backend_pythonpath = str(self.backend_root)
+        env["PYTHONPATH"] = backend_pythonpath if not existing_pythonpath else backend_pythonpath + os.pathsep + existing_pythonpath
 
         process = await asyncio.create_subprocess_exec(
             *adapter.build_launch_command(self.backend_root, self.backend_python),
@@ -69,7 +77,11 @@ class CliRuntimeExecutor(Executor):
             pid=process.pid,
             workspace=cwd,
             launch_profile=profile.id,
-            metadata={"adapter_id": adapter.adapter_id},
+            metadata={
+                "adapter_id": adapter.adapter_id,
+                "runtime_model": runtime_model or "",
+                "command_name": command_name or "",
+            },
         )
         self._processes[agent_id] = process
         self.append_runtime_log(handle, f"Process launched with PID {process.pid}", "system")

@@ -5,7 +5,7 @@ import sys
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.models import AgentType, RuntimeCapabilities
@@ -21,6 +21,7 @@ class LaunchProfileConfig(BaseModel):
     workspace_required: bool = True
     supports_initial_prompt: bool = True
     capabilities: RuntimeCapabilities = Field(default_factory=RuntimeCapabilities)
+    metadata: dict[str, object] = Field(default_factory=dict)
 
     def public_dict(self) -> dict[str, object]:
         return {
@@ -32,6 +33,7 @@ class LaunchProfileConfig(BaseModel):
             "workspace_required": self.workspace_required,
             "supports_initial_prompt": self.supports_initial_prompt,
             "capabilities": self.capabilities.model_dump(mode="json"),
+            "metadata": self.metadata,
         }
 
 
@@ -65,6 +67,10 @@ class AppSettings(BaseSettings):
             "submit_prompt",
             "submit_task",
         ]
+    )
+    gemini_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("GEMINI_API_KEY", "AGENT_CONTROL_GEMINI_API_KEY"),
     )
 
     def load_launch_profiles(self, base_dir: Path) -> dict[str, LaunchProfileConfig]:

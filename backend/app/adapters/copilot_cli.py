@@ -18,9 +18,19 @@ class CopilotCliAdapter(CliAgentRuntimeAdapter):
         supports_resume=False,
     )
 
+    def binary_candidates(self) -> tuple[str, ...]:
+        return ("github-copilot-cli", "copilot", "gh")
+
     def preflight(self) -> None:
-        if not self.find_binary("github-copilot-cli", "copilot", "gh"):
+        if not self.find_binary(*self.binary_candidates()):
             raise ValueError("Copilot CLI is not installed or not on PATH")
 
-    def run_prompt(self, prompt: str, workspace: str) -> tuple[int, str]:
+    def run_prompt(
+        self,
+        prompt: str,
+        workspace: str,
+        *,
+        runtime_model: str | None = None,
+        command_name: str | None = None,
+    ) -> tuple[int, str]:
         raise ValueError("Copilot CLI adapter is registered but prompt execution is not enabled in this build")

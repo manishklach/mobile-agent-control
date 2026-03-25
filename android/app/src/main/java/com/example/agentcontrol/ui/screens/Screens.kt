@@ -44,13 +44,16 @@ import com.example.agentcontrol.data.model.AgentRuntimeStatus
 import com.example.agentcontrol.data.model.AuditEntry
 import com.example.agentcontrol.data.model.DashboardActivityItem
 import com.example.agentcontrol.data.model.JobRecord
+import com.example.agentcontrol.data.model.LaunchSupport
 import com.example.agentcontrol.data.model.LaunchProfileRecord
 import com.example.agentcontrol.data.model.MachineOverview
 import com.example.agentcontrol.data.model.MachineSelfResponse
 import com.example.agentcontrol.data.model.RunningAgentOverview
 import com.example.agentcontrol.data.model.SupervisorEvent
 import com.example.agentcontrol.data.model.WorkspaceRecord
+import com.example.agentcontrol.data.model.defaultModel
 import com.example.agentcontrol.data.model.promptTemplate
+import com.example.agentcontrol.data.model.runtimeSummary
 import com.example.agentcontrol.ui.components.EmptyState
 import com.example.agentcontrol.ui.components.ErrorState
 import com.example.agentcontrol.ui.components.LoadingState
@@ -483,19 +486,23 @@ fun MachineDetailScreen(
 fun LaunchAgentScreen(
     machineName: String,
     profilesState: UiState<List<LaunchProfileRecord>>,
+    launchSupportState: UiState<LaunchSupport>,
     workspacesState: UiState<List<WorkspaceRecord>>,
     lastWorkspace: String?,
     actionError: String?,
     actionMessage: String?,
     onBack: () -> Unit,
     onRefresh: () -> Unit,
-    onLaunch: (String, String, String, String?) -> Unit,
-    onLaunchBestAvailable: (String, String, String, String?) -> Unit
+    onLaunchSupportRefresh: (String, String?) -> Unit,
+    onLaunch: (String, String, String, String?, String?, String?) -> Unit,
+    onLaunchBestAvailable: (String, String, String, String?, String?, String?) -> Unit
 ) {
     var agentType by rememberSaveable { mutableStateOf("gemini") }
     var selectedProfileId by rememberSaveable { mutableStateOf("") }
     var selectedWorkspace by rememberSaveable { mutableStateOf("") }
     var initialPrompt by rememberSaveable { mutableStateOf("") }
+    var runtimeModel by rememberSaveable { mutableStateOf("") }
+    var selectedCommand by rememberSaveable { mutableStateOf("") }
     LaunchedEffect(lastWorkspace, workspacesState) {
         if (selectedWorkspace.isNotBlank()) return@LaunchedEffect
         val options = (workspacesState as? UiState.Success)?.data.orEmpty()
@@ -504,6 +511,10 @@ fun LaunchAgentScreen(
             options.isNotEmpty() -> options.first().path
             else -> ""
         }
+    }
+    LaunchedEffect(agentType, selectedWorkspace) {
+        val adapterId = if (agentType == "gemini") "gemini-cli" else "codex-cli"
+        onLaunchSupportRefresh(adapterId, selectedWorkspace.ifBlank { null })
     }
 
     Scaffold(
@@ -540,6 +551,8 @@ fun LaunchAgentScreen(
                                     onClick = {
                                         agentType = type
                                         selectedProfileId = ""
+                                        runtimeModel = ""
+                                        selectedCommand = ""
                                     },
                                     label = { Text(type.uppercase()) }
                                 )
@@ -554,6 +567,22 @@ fun LaunchAgentScreen(
                     is UiState.Error -> ErrorState(profilesState.message, onRefresh)
                     is UiState.Success -> {
                         val filteredProfiles = profilesState.data.filter { it.agentType == agentType }
+                        LaunchedEffect(filteredProfiles.map { it.id }) {
+                            if (selectedProfileId.isBlank() && filteredProfiles.isNotEmpty()) {
+                                selectedProfileId = filteredProfiles.first().id
+                            }
+                        }
+                        LaunchedEffect(selectedProfileId, filteredProfiles.map { it.id }) {
+                            val selected = filteredProfiles.firstOrNull { it.id == selectedProfileId }
+                            runtimeModel = if (selected?.capabilities?.supportsModelSelection == true) {
+                                selected.defaultModel.orEmpty()
+                            } else {
+                                ""
+                            }
+                            if (selected?.capabilities?.supportsCommandTemplates != true) {
+                                selectedCommand = ""
+                            }
+                        }
                         Card {
                             Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                 Text("Launch Profile", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -648,6 +677,80 @@ fun LaunchAgentScreen(
                                 }
                             }
                         }
+                        if (agentType == "gemini") {
+                            when (launchSupportState) {
+                                UiState.Loading -> LoadingState("Checking Gemini runtime support…")
+                                is UiState.Error -> ErrorState(launchSupportState.message, onRefresh)
+                                is UiState.Success -> {
+                                    val support = launchSupportState.data
+                                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                                        Column(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            Text("Gemini Runtime", fontWeight = FontWeight.SemiBold)
+                                            Text(
+                                                listOfNotNull(
+                                                    support.adapter?.status?.version?.let { "Version $it" },
+                                                    support.adapter?.status?.auth?.message,
+                                                ).joinToString(" • ").ifBlank { "Gemini CLI ready" },
+                                                style = MaterialTheme.typography.bodySmall
+                                            )
+                                            support.adapter?.status?.warnings?.forEach { warning ->
+                                                Text(warning, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                                            }
+                                            if (support.adapter?.capabilities?.supportsModelSelection == true) {
+                                                OutlinedTextField(
+                                                    value = runtimeModel,
+                                                    onValueChange = { runtimeModel = it },
+                                                    label = { Text("Model (optional)") },
+                                                    modifier = Modifier.fillMaxWidth()
+                                                )
+                                            }
+                                            if (support.commands.isNotEmpty()) {
+                                                Text("Slash Command", fontWeight = FontWeight.SemiBold)
+                                                support.commands.take(8).forEach { command ->
+                                                    Card(
+                                                        colors = CardDefaults.cardColors(
+                                                            containerColor = if (selectedCommand == command.name) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface
+                                                        )
+                                                    ) {
+                                                        Column(
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .clickable { selectedCommand = if (selectedCommand == command.name) "" else command.name }
+                                                                .padding(10.dp),
+                                                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                                                        ) {
+                                                            Row(
+                                                                modifier = Modifier.fillMaxWidth(),
+                                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                                verticalAlignment = Alignment.CenterVertically
+                                                            ) {
+                                                                Text("/${command.name}", fontWeight = FontWeight.SemiBold)
+                                                                MetricPill("Scope", command.scope)
+                                                            }
+                                                            command.description?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                                                            command.promptPreview?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            if (support.mcpServers.isNotEmpty()) {
+                                                Text("MCP", fontWeight = FontWeight.SemiBold)
+                                                support.mcpServers.take(6).forEach { server ->
+                                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                        StateBadge(server.health)
+                                                        Text(server.name, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                                                        Text("${server.scope} • ${server.transport}", style = MaterialTheme.typography.bodySmall)
+                                                    }
+                                                    server.warning?.let {
+                                                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         Text("Initial Prompt", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                         OutlinedTextField(
                             value = initialPrompt,
@@ -664,6 +767,12 @@ fun LaunchAgentScreen(
                                 Text("Type: ${agentType.uppercase()}", style = MaterialTheme.typography.bodySmall)
                                 Text("Profile: ${selectedProfileId.ifBlank { "Choose a profile" }}", style = MaterialTheme.typography.bodySmall)
                                 Text("Workspace: ${selectedWorkspace.ifBlank { "Choose a workspace" }}", style = MaterialTheme.typography.bodySmall)
+                                if (runtimeModel.isNotBlank()) {
+                                    Text("Model: $runtimeModel", style = MaterialTheme.typography.bodySmall)
+                                }
+                                if (selectedCommand.isNotBlank()) {
+                                    Text("Slash command: /$selectedCommand", style = MaterialTheme.typography.bodySmall)
+                                }
                                 Text(
                                     "Prompt: ${initialPrompt.ifBlank { "No initial prompt. Agent will start idle." }}",
                                     style = MaterialTheme.typography.bodySmall
@@ -672,13 +781,13 @@ fun LaunchAgentScreen(
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(
-                                onClick = { onLaunch(agentType, selectedProfileId, selectedWorkspace, initialPrompt.ifBlank { null }) },
+                                onClick = { onLaunch(agentType, selectedProfileId, selectedWorkspace, initialPrompt.ifBlank { null }, runtimeModel.ifBlank { null }, selectedCommand.ifBlank { null }) },
                                 enabled = canLaunch
                             ) {
                                 Text("Launch Here")
                             }
                             Button(
-                                onClick = { onLaunchBestAvailable(agentType, selectedProfileId, selectedWorkspace, initialPrompt.ifBlank { null }) },
+                                onClick = { onLaunchBestAvailable(agentType, selectedProfileId, selectedWorkspace, initialPrompt.ifBlank { null }, runtimeModel.ifBlank { null }, selectedCommand.ifBlank { null }) },
                                 enabled = canLaunch
                             ) {
                                 Text("Best Available")
@@ -850,6 +959,11 @@ fun AgentDetailScreen(
                                 Text("Current task: ${agent.currentTask ?: latestCompletedJob?.inputText ?: "-"}")
                                 Text("Workspace: ${agent.workspace ?: "-"}")
                                 Text("Launch profile: ${agent.launchProfile ?: "-"}")
+                                agent.runtimeModel?.let { Text("Model: $it") }
+                                agent.commandName?.let { Text("Slash command: /$it") }
+                                if (agent.mcpServers.isNotEmpty()) {
+                                    Text("MCP: ${agent.mcpServers.joinToString(", ")}")
+                                }
                                 Text("Started: ${agent.startedAt ?: "-"}")
                                 metrics?.let { status ->
                                     HorizontalDivider()
@@ -861,8 +975,18 @@ fun AgentDetailScreen(
                                     }
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                         MetricPill("Last log", status.lastLogTimestamp ?: "-")
+                                        MetricPill("Last output", status.lastOutputAt ?: "-")
                                         MetricPill("CPU", status.resources.cpuPercent?.let { "${it.toInt()}%" } ?: "-")
                                         MetricPill("Memory", status.resources.memoryMb?.let { "${it} MB" } ?: "-")
+                                    }
+                                    if (status.runtimeModel != null || status.commandName != null || status.mcpServers.isNotEmpty()) {
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            status.runtimeModel?.let { MetricPill("Model", it) }
+                                            status.commandName?.let { MetricPill("Slash", "/$it") }
+                                            if (status.mcpServers.isNotEmpty()) {
+                                                MetricPill("MCP", status.mcpServers.joinToString(", "))
+                                            }
+                                        }
                                     }
                                     if (status.warningMessage != null) {
                                         Text(status.warningMessage, color = if (status.stuckIndicator) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
@@ -1037,11 +1161,17 @@ private fun MachineCard(machine: MachineOverview, onClick: () -> Unit) {
                     MetricPill("Failed", health.agentsFailed.toString())
                     MetricPill("Heartbeat", health.lastHeartbeat)
                 }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    MetricPill("MCP", "${health.mcpHealthyCount}/${health.mcpServerCount}")
+                }
                 if (health.resources.cpuPercent != null || health.resources.memoryMb != null) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         MetricPill("CPU", health.resources.cpuPercent?.let { "${it.toInt()}%" } ?: "-")
                         MetricPill("Memory", health.resources.memoryMb?.let { "${it.toInt()} MB" } ?: "-")
                     }
+                }
+                health.adapterWarnings.take(2).forEach { warning ->
+                    Text(warning, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 }
             }
             Text(
@@ -1076,6 +1206,11 @@ private fun RunningAgentCard(item: RunningAgentOverview, onOpen: () -> Unit) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 MetricPill("Workspace", item.status.workspace ?: "-")
                 MetricPill("Profile", item.status.launchProfile ?: "-")
+            }
+            item.status.runtimeModel?.let { MetricPill("Model", it) }
+            item.status.commandName?.let { MetricPill("Slash", "/$it") }
+            if (item.status.mcpServers.isNotEmpty()) {
+                MetricPill("MCP", item.status.mcpServers.joinToString(", "))
             }
             Text(item.status.currentTask ?: "No current task", style = MaterialTheme.typography.bodySmall)
             item.status.recentLogs.lastOrNull()?.message?.let { snippet ->
@@ -1153,6 +1288,10 @@ private fun AgentCard(agent: AgentRecord, onClick: () -> Unit, onStop: () -> Uni
                     MetricPill("Workspace", agent.workspace ?: "-")
                 }
             }
+            agent.runtimeSummary?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            if (agent.mcpServers.isNotEmpty()) {
+                MetricPill("MCP", agent.mcpServers.joinToString(", "))
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 TextButton(onClick = onClick) { Text("Open") }
                 TextButton(onClick = onRestart) { Text("Restart") }
@@ -1181,6 +1320,7 @@ private fun SessionCard(agent: AgentRecord, onOpen: () -> Unit, onRelaunch: () -
                 MetricPill("Profile", agent.launchProfile ?: "-")
                 MetricPill("Workspace", agent.workspace ?: "-")
             }
+            agent.runtimeSummary?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             Text(agent.promptTemplate ?: "No saved prompt template", style = MaterialTheme.typography.bodySmall)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 TextButton(onClick = onOpen) { Text("Open") }

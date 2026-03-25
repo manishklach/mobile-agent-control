@@ -9,12 +9,16 @@ import com.example.agentcontrol.data.model.HealthResponse
 import com.example.agentcontrol.data.model.LaunchAgentRequest
 import com.example.agentcontrol.data.model.LaunchProfilesResponse
 import com.example.agentcontrol.data.model.LogsResponse
+import com.example.agentcontrol.data.model.McpServersResponse
 import com.example.agentcontrol.data.model.MachineHealthStatus
 import com.example.agentcontrol.data.model.MachineListResponse
 import com.example.agentcontrol.data.model.MachineSelfResponse
 import com.example.agentcontrol.data.model.PromptAgentRequest
 import com.example.agentcontrol.data.model.RestartAgentRequest
+import com.example.agentcontrol.data.model.RuntimeAdapterStatusResponse
+import com.example.agentcontrol.data.model.RuntimeAdaptersResponse
 import com.example.agentcontrol.data.model.RunningAgentsResponse
+import com.example.agentcontrol.data.model.SlashCommandsResponse
 import com.example.agentcontrol.data.model.StartAgentRequest
 import com.example.agentcontrol.data.model.TaskDetailResponse
 import com.example.agentcontrol.data.model.TaskListResponse
@@ -61,8 +65,29 @@ interface MachineApi {
     @GET("launch-profiles")
     suspend fun launchProfiles(): LaunchProfilesResponse
 
+    @GET("runtime/adapters")
+    suspend fun runtimeAdapters(@Query("workspace") workspace: String? = null): RuntimeAdaptersResponse
+
+    @GET("runtime/adapters/{adapterId}")
+    suspend fun runtimeAdapter(
+        @Path("adapterId") adapterId: String,
+        @Query("workspace") workspace: String? = null
+    ): RuntimeAdapterStatusResponse
+
+    @GET("runtime/adapters/{adapterId}/commands")
+    suspend fun slashCommands(
+        @Path("adapterId") adapterId: String,
+        @Query("workspace") workspace: String? = null
+    ): SlashCommandsResponse
+
     @GET("workspaces")
     suspend fun workspaces(): WorkspacesResponse
+
+    @GET("machines/{id}/mcp")
+    suspend fun machineMcp(
+        @Path("id") id: String,
+        @Query("workspace") workspace: String? = null
+    ): McpServersResponse
 
     @POST("agents/launch")
     suspend fun launchAgent(@Body request: LaunchAgentRequest): AgentDetailResponse

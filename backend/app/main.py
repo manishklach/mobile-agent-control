@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -9,6 +11,8 @@ from app.core.config import get_settings
 from app.ui.admin import router as admin_router
 
 settings = get_settings()
+if settings.gemini_api_key:
+    os.environ.setdefault("GEMINI_API_KEY", settings.gemini_api_key)
 
 app = FastAPI(title=settings.app_name, version="0.1.0")
 app.add_middleware(

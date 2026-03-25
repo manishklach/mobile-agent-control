@@ -8,7 +8,12 @@
       "description": "Launches a supervised Gemini CLI runtime through the vendor-neutral mobile control plane adapter layer.",
       "env": {},
       "workspace_required": true,
-      "supports_initial_prompt": true
+      "supports_initial_prompt": true,
+      "metadata": {
+        "default_model": "gemini-2.5-pro",
+        "mcp_enabled": true,
+        "quickstart": "Gemini-first workflow with slash commands and MCP-aware project tooling."
+      }
     },
     {
       "id": "codex-safe-default",
@@ -18,7 +23,10 @@
       "description": "Launches a supervised Codex CLI runtime through the same adapter interface used by Gemini CLI.",
       "env": {},
       "workspace_required": true,
-      "supports_initial_prompt": true
+      "supports_initial_prompt": true,
+      "metadata": {
+        "quickstart": "General-purpose Codex CLI workflow."
+      }
     }
   ]
 }

@@ -71,6 +71,56 @@ class RuntimeCapabilities(BaseModel):
     requires_workspace: bool = True
     requires_local_auth: bool = False
     supports_resume: bool = False
+    supports_command_templates: bool = False
+    supports_mcp: bool = False
+    supports_model_selection: bool = False
+
+
+class RuntimeFeatureStatus(BaseModel):
+    available: bool
+    message: str | None = None
+
+
+class RuntimeAdapterStatus(BaseModel):
+    adapter_id: str
+    agent_type: AgentType
+    label: str
+    installed: RuntimeFeatureStatus
+    auth: RuntimeFeatureStatus
+    version: str | None = None
+    binary_path: str | None = None
+    capabilities: RuntimeCapabilities = Field(default_factory=RuntimeCapabilities)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class RuntimeAdapterRecord(BaseModel):
+    adapter_id: str
+    agent_type: AgentType
+    label: str
+    capabilities: RuntimeCapabilities = Field(default_factory=RuntimeCapabilities)
+    status: RuntimeAdapterStatus
+
+
+class SlashCommandRecord(BaseModel):
+    name: str
+    description: str | None = None
+    scope: str
+    path: str
+    source: str
+    managed: bool = False
+    prompt_preview: str | None = None
+
+
+class McpServerRecord(BaseModel):
+    name: str
+    scope: str
+    transport: str
+    health: str
+    enabled: bool = True
+    command: str | None = None
+    endpoint: str | None = None
+    description: str | None = None
+    warning: str | None = None
 
 
 class MachineRecord(BaseModel):
@@ -92,6 +142,7 @@ class LaunchProfileRecord(BaseModel):
     workspace_required: bool = True
     supports_initial_prompt: bool = True
     capabilities: RuntimeCapabilities = Field(default_factory=RuntimeCapabilities)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkspaceRecord(BaseModel):
@@ -126,6 +177,11 @@ class AgentRecord(BaseModel):
     updated_at: datetime
     worker_id: str | None = None
     current_job_id: str | None = None
+    runtime_model: str | None = None
+    command_name: str | None = None
+    last_output_at: datetime | None = None
+    mcp_enabled: bool = False
+    mcp_servers: list[str] = Field(default_factory=list)
     recent_logs: list[LogEntry] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -165,6 +221,9 @@ class MachineHealthStatus(BaseModel):
     warning_count: int
     worker_pool: WorkerPoolState
     resources: ResourceUsage = Field(default_factory=ResourceUsage)
+    mcp_server_count: int = 0
+    mcp_healthy_count: int = 0
+    adapter_warnings: list[str] = Field(default_factory=list)
 
 
 class MachineListResponse(BaseModel):
@@ -201,6 +260,8 @@ class LaunchAgentRequest(BaseModel):
     launch_profile: str
     workspace: str
     initial_prompt: str | None = None
+    runtime_model: str | None = None
+    command_name: str | None = None
 
 
 class RestartAgentRequest(BaseModel):
@@ -237,6 +298,11 @@ class AgentRuntimeStatus(BaseModel):
     current_task: str | None = None
     workspace: str | None = None
     launch_profile: str | None = None
+    runtime_model: str | None = None
+    command_name: str | None = None
+    last_output_at: datetime | None = None
+    mcp_enabled: bool = False
+    mcp_servers: list[str] = Field(default_factory=list)
     pid: int | None = None
     recent_logs: list[LogEntry] = Field(default_factory=list)
     resources: ResourceUsage = Field(default_factory=ResourceUsage)
@@ -274,6 +340,32 @@ class LaunchProfilesResponse(BaseModel):
 
 class WorkspacesResponse(BaseModel):
     workspaces: list[WorkspaceRecord]
+
+
+class RuntimeAdaptersResponse(BaseModel):
+    adapters: list[RuntimeAdapterRecord]
+
+
+class RuntimeAdapterStatusResponse(BaseModel):
+    adapter: RuntimeAdapterRecord
+
+
+class SlashCommandsResponse(BaseModel):
+    adapter_id: str
+    commands: list[SlashCommandRecord]
+
+
+class UpsertSlashCommandRequest(BaseModel):
+    name: str
+    prompt: str
+    description: str | None = None
+    scope: str = "project"
+    workspace: str | None = None
+
+
+class McpServersResponse(BaseModel):
+    machine_id: str
+    servers: list[McpServerRecord]
 
 
 class ApiError(BaseModel):

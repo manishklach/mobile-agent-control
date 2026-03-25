@@ -5,8 +5,10 @@ Agent Control MVP is a vendor-neutral mobile control plane for terminal-native c
 The current implementation provides:
 
 - an Android operator console
+- a responsive web operator console at `/admin`
 - a machine-side FastAPI supervisor
 - a vendor-neutral CLI runtime adapter layer
+- Gemini-first slash command and MCP awareness
 
 Gemini CLI is the flagship default integration in the demo config and quickstart, while Codex CLI is implemented through the same adapter contract.
 
@@ -92,7 +94,13 @@ backend/
 - `GET /agents/{id}/metrics`
 - `POST /agents/start`
 - `GET /launch-profiles`
+- `GET /runtime/adapters`
+- `GET /runtime/adapters/{adapter_id}`
+- `GET /runtime/adapters/{adapter_id}/commands`
+- `POST /runtime/adapters/{adapter_id}/commands`
+- `DELETE /runtime/adapters/{adapter_id}/commands/{command_name}`
 - `GET /workspaces`
+- `GET /machines/{id}/mcp`
 - `POST /agents/launch`
 - `POST /agents/{id}/stop`
 - `POST /agents/{id}/restart`
@@ -122,6 +130,27 @@ curl -X POST http://localhost:8000/agents/launch `
   -H "Authorization: Bearer 0118" `
   -H "Content-Type: application/json" `
   -d "{\"type\":\"gemini\",\"launch_profile\":\"gemini-safe-default\",\"workspace\":\"C:\\Users\\ManishKL\\Documents\\Playground\",\"initial_prompt\":\"Summarize the repo and confirm the control plane is connected\"}"
+```
+
+Inspect Gemini runtime status and capabilities:
+
+```powershell
+curl -X GET http://localhost:8000/runtime/adapters/gemini-cli `
+  -H "Authorization: Bearer 0118"
+```
+
+List Gemini slash commands for a workspace:
+
+```powershell
+curl -X GET "http://localhost:8000/runtime/adapters/gemini-cli/commands?workspace=C:\Users\ManishKL\Documents\Playground" `
+  -H "Authorization: Bearer 0118"
+```
+
+Inspect machine MCP visibility:
+
+```powershell
+curl -X GET "http://localhost:8000/machines/machine-self/mcp?workspace=C:\Users\ManishKL\Documents\Playground" `
+  -H "Authorization: Bearer 0118"
 ```
 
 Launch a supervised local Codex process with the Codex CLI adapter:
@@ -209,6 +238,14 @@ gemini -p "Reply with exactly: hello from gemini" --output-format json
 ```
 
 Once that succeeds locally, the supervisor can launch Gemini through `gemini-safe-default`.
+
+Gemini-first operator features:
+
+- The Android launch flow now defaults to Gemini and can surface Gemini CLI version/auth status.
+- The web console at `/admin` is responsive for desktop Chrome, Android Chrome, and Safari/WebKit-class mobile browsers.
+- Workspace-scoped and user-scoped Gemini slash commands are listed from the real `.gemini/commands` directories.
+- MCP servers are read from Gemini settings and surfaced in machine health and launch support views.
+- Agent monitoring now includes runtime model, selected slash command, MCP usage, and last output time where available.
 
 Adapter architecture:
 

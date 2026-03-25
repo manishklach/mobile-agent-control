@@ -11,6 +11,7 @@ import com.example.agentcontrol.data.model.HealthResponse
 import com.example.agentcontrol.data.model.LaunchAgentRequest
 import com.example.agentcontrol.data.model.LaunchProfilesResponse
 import com.example.agentcontrol.data.model.LogsResponse
+import com.example.agentcontrol.data.model.McpServersResponse
 import com.example.agentcontrol.data.model.MachineConfig
 import com.example.agentcontrol.data.model.MachineHealthStatus
 import com.example.agentcontrol.data.model.MachineOverview
@@ -18,7 +19,10 @@ import com.example.agentcontrol.data.model.RunningAgentOverview
 import com.example.agentcontrol.data.model.MachineSelfResponse
 import com.example.agentcontrol.data.model.PromptAgentRequest
 import com.example.agentcontrol.data.model.RestartAgentRequest
+import com.example.agentcontrol.data.model.RuntimeAdapterStatusResponse
+import com.example.agentcontrol.data.model.RuntimeAdaptersResponse
 import com.example.agentcontrol.data.model.RunningAgentsResponse
+import com.example.agentcontrol.data.model.SlashCommandsResponse
 import com.example.agentcontrol.data.model.StartAgentRequest
 import com.example.agentcontrol.data.model.SupervisorEvent
 import com.example.agentcontrol.data.model.TaskDetailResponse
@@ -112,9 +116,31 @@ class MachineRepository(
         ApiClientFactory.create(machine.baseUrl) { machine.token }.first.launchProfiles()
     }
 
+    suspend fun runtimeAdapters(machineId: String, workspace: String? = null): RuntimeAdaptersResponse = withContext(ioDispatcher) {
+        val machine = requireMachine(machineId)
+        ApiClientFactory.create(machine.baseUrl) { machine.token }.first.runtimeAdapters(workspace)
+    }
+
+    suspend fun runtimeAdapter(machineId: String, adapterId: String, workspace: String? = null): RuntimeAdapterStatusResponse = withContext(ioDispatcher) {
+        val machine = requireMachine(machineId)
+        ApiClientFactory.create(machine.baseUrl) { machine.token }.first.runtimeAdapter(adapterId, workspace)
+    }
+
+    suspend fun slashCommands(machineId: String, adapterId: String, workspace: String? = null): SlashCommandsResponse = withContext(ioDispatcher) {
+        val machine = requireMachine(machineId)
+        ApiClientFactory.create(machine.baseUrl) { machine.token }.first.slashCommands(adapterId, workspace)
+    }
+
     suspend fun workspaces(machineId: String): WorkspacesResponse = withContext(ioDispatcher) {
         val machine = requireMachine(machineId)
         ApiClientFactory.create(machine.baseUrl) { machine.token }.first.workspaces()
+    }
+
+    suspend fun machineMcp(machineId: String, workspace: String? = null): McpServersResponse = withContext(ioDispatcher) {
+        val machine = requireMachine(machineId)
+        val (api, _) = ApiClientFactory.create(machine.baseUrl) { machine.token }
+        val self = api.machineSelf()
+        api.machineMcp(self.machine.id, workspace)
     }
 
     suspend fun launchAgent(machineId: String, request: LaunchAgentRequest): AgentDetailResponse = withContext(ioDispatcher) {

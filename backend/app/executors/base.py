@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 from app.models import AgentType, LogEntry
 
@@ -20,7 +20,7 @@ class ProcessHandle:
     finished_at: datetime | None = None
     exit_code: int | None = None
     active_job_id: str | None = None
-    metadata: dict[str, str] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class Executor(Protocol):
@@ -31,6 +31,8 @@ class Executor(Protocol):
         workspace: str | None = None,
         launch_profile: str | None = None,
         initial_prompt: str | None = None,
+        runtime_model: str | None = None,
+        command_name: str | None = None,
     ) -> ProcessHandle:
         ...
 

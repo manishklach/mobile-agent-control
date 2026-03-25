@@ -32,13 +32,18 @@ from app.models import (
     LaunchProfileRecord,
     LaunchProfilesResponse,
     LogsResponse,
+    McpServersResponse,
     MachineHealthStatus,
     MachineListResponse,
     MachineRecord,
     MachineSelfResponse,
     PromptAgentRequest,
     RestartAgentRequest,
+    RuntimeAdapterRecord,
+    RuntimeAdapterStatusResponse,
+    RuntimeAdaptersResponse,
     RunningAgentsResponse,
+    SlashCommandsResponse,
     StartAgentRequest,
     SubmitTaskRequest,
     SupervisorEvent,
@@ -151,6 +156,8 @@ class AgentManager:
 
     async def list_agents(self) -> AgentListResponse:
         await self._refresh_machine()
+        for agent in self._agents.values():
+            self._sanitize_agent_runtime_metadata(agent)
         return AgentListResponse(agents=sorted(self._agents.values(), key=lambda item: item.updated_at, reverse=True))
 
     async def running_agents(self) -> RunningAgentsResponse:
@@ -165,6 +172,7 @@ class AgentManager:
 
     async def get_agent(self, agent_id: str) -> AgentDetailResponse:
         agent = self._require_agent(agent_id)
+        self._sanitize_agent_runtime_metadata(agent)
         current_job = self._jobs.get(agent.current_job_id) if agent.current_job_id else None
         recent_jobs = self._recent_jobs_for_agent(agent_id)
         latest_completed_job = next(
@@ -176,6 +184,76 @@ class AgentManager:
     async def get_launch_profiles(self) -> LaunchProfilesResponse:
         profiles = [LaunchProfileRecord(**profile.public_dict()) for profile in self.launch_profiles.values()]
         return LaunchProfilesResponse(profiles=profiles)
+
+    async def list_runtime_adapters(self, workspace: str | None = None) -> RuntimeAdaptersResponse:
+        adapters = [
+            RuntimeAdapterRecord(
+                adapter_id=adapter.adapter_id,
+                agent_type=adapter.agent_type,
+                label=adapter.label,
+                capabilities=adapter.capabilities,
+                status=adapter.runtime_status(workspace),
+            )
+            for adapter in self._runtime_adapters().values()
+        ]
+        return RuntimeAdaptersResponse(adapters=adapters)
+
+    async def get_runtime_adapter(self, adapter_id: str, workspace: str | None = None) -> RuntimeAdapterStatusResponse:
+        adapter = self._runtime_adapters().get(adapter_id)
+        if adapter is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Runtime adapter not found")
+        return RuntimeAdapterStatusResponse(
+            adapter=RuntimeAdapterRecord(
+                adapter_id=adapter.adapter_id,
+                agent_type=adapter.agent_type,
+                label=adapter.label,
+                capabilities=adapter.capabilities,
+                status=adapter.runtime_status(workspace),
+            )
+        )
+
+    async def list_slash_commands(self, adapter_id: str, workspace: str | None = None) -> SlashCommandsResponse:
+        adapter = self._require_runtime_adapter(adapter_id)
+        workspace_path = str(self._validate_workspace(workspace)) if workspace else None
+        return SlashCommandsResponse(adapter_id=adapter_id, commands=adapter.list_command_templates(workspace_path))
+
+    async def upsert_slash_command(
+        self,
+        adapter_id: str,
+        *,
+        name: str,
+        prompt: str,
+        description: str | None = None,
+        scope: str = "project",
+        workspace: str | None = None,
+    ) -> SlashCommandsResponse:
+        adapter = self._require_runtime_adapter(adapter_id)
+        workspace_path = str(self._validate_workspace(workspace)) if workspace else None
+        adapter.upsert_command_template(
+            name=name,
+            prompt=prompt,
+            description=description,
+            scope=scope,
+            workspace=workspace_path,
+        )
+        return await self.list_slash_commands(adapter_id, workspace_path)
+
+    async def delete_slash_command(self, adapter_id: str, name: str, scope: str = "project", workspace: str | None = None) -> SlashCommandsResponse:
+        adapter = self._require_runtime_adapter(adapter_id)
+        workspace_path = str(self._validate_workspace(workspace)) if workspace else None
+        adapter.delete_command_template(name=name, scope=scope, workspace=workspace_path)
+        return await self.list_slash_commands(adapter_id, workspace_path)
+
+    async def machine_mcp_servers(self, machine_id: str, workspace: str | None = None) -> McpServersResponse:
+        if machine_id != self.machine.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Machine not found")
+        workspace_path = str(self._validate_workspace(workspace)) if workspace else None
+        servers = []
+        for adapter in self._runtime_adapters().values():
+            if not adapter.capabilities.supports_mcp:
+                continue
+            servers.extend(adapter.list_mcp_servers(workspace_path))
+        return McpServersResponse(machine_id=self.machine.id, servers=servers)
 
     async def list_workspaces(self) -> WorkspacesResponse:
         configured: dict[str, WorkspaceRecord] = {}
@@ -228,6 +306,11 @@ class AgentManager:
                 updated_at=now,
                 worker_id=None,
                 current_job_id=startup_job.id,
+                runtime_model=None,
+                command_name=None,
+                last_output_at=None,
+                mcp_enabled=False,
+                mcp_servers=[],
                 recent_logs=[],
                 metadata=request.metadata,
             )
@@ -253,11 +336,23 @@ class AgentManager:
             if profile.agent_type != request.type:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Launch profile does not match agent type")
             workspace = self._validate_workspace(request.workspace)
+            runtime_model, command_name = self._normalize_launch_options(
+                request.launch_profile,
+                request.runtime_model,
+                request.command_name,
+            )
 
             now = datetime.now(UTC)
             agent_id = str(uuid4())
             startup_job = self._create_job(agent_id=agent_id, kind=JobKind.STARTUP, input_text=request.initial_prompt or "launch agent")
-            metadata = self._build_launch_metadata(request.type, request.launch_profile, str(workspace), request.initial_prompt)
+            metadata = self._build_launch_metadata(
+                request.type,
+                request.launch_profile,
+                str(workspace),
+                request.initial_prompt,
+                runtime_model=runtime_model,
+                command_name=command_name,
+            )
             agent = AgentRecord(
                 id=agent_id,
                 type=request.type,
@@ -270,6 +365,10 @@ class AgentManager:
                 updated_at=now,
                 worker_id=None,
                 current_job_id=startup_job.id,
+                runtime_model=runtime_model,
+                command_name=command_name,
+                mcp_enabled=bool(self._profile_metadata(request.launch_profile).get("mcp_enabled", False)),
+                mcp_servers=self._mcp_server_names(str(workspace)),
                 recent_logs=[],
                 metadata=metadata,
             )
@@ -280,7 +379,12 @@ class AgentManager:
                 target_id=agent_id,
                 status=AuditStatus.ACCEPTED,
                 message="Launch command accepted by supervisor" if self._has_available_worker_slot() else "Launch queued; waiting for worker capacity",
-                details={"launch_profile": request.launch_profile, "workspace": str(workspace)},
+                details={
+                    "launch_profile": request.launch_profile,
+                    "workspace": str(workspace),
+                    "runtime_model": runtime_model,
+                    "command_name": command_name,
+                },
             )
             if self._has_available_worker_slot():
                 await self._launch_process_agent(agent, raise_on_failure=True)
@@ -499,7 +603,7 @@ class AgentManager:
                 await self._publish("agent.failed", agent=agent, message="Agent process was not available after launch")
                 return
             if handle.finished_at is not None:
-                error_message = self._classify_launch_error(self._extract_runtime_error(handle))
+                error_message = self._classify_launch_error(self._extract_runtime_error(handle), agent=agent)
                 agent.state = AgentState.FAILED
                 agent.updated_at = datetime.now(UTC)
                 if agent.current_job_id:
@@ -532,6 +636,11 @@ class AgentManager:
         launch_profile = str(launch_request.get("launch_profile") or agent.launch_profile or "")
         workspace = str(launch_request.get("workspace") or agent.workspace or "")
         initial_prompt = agent.current_task
+        runtime_model, command_name = self._normalize_launch_options(
+            launch_profile,
+            str(launch_request.get("runtime_model") or agent.runtime_model or "") or None,
+            str(launch_request.get("command_name") or agent.command_name or "") or None,
+        )
         now = datetime.now(UTC)
         startup_job = self._jobs.get(agent.current_job_id) if agent.current_job_id else None
         if startup_job:
@@ -549,12 +658,14 @@ class AgentManager:
                 workspace=workspace,
                 launch_profile=launch_profile,
                 initial_prompt=initial_prompt,
+                runtime_model=runtime_model,
+                command_name=command_name,
             )
         except Exception as exc:
             agent.state = AgentState.FAILED
             agent.worker_id = None
             agent.updated_at = datetime.now(UTC)
-            error_message = self._classify_launch_error(str(exc))
+            error_message = self._classify_launch_error(str(exc), launch_profile=launch_profile)
             if startup_job:
                 self._complete_job(startup_job.id, JobState.FAILED, "Launch failed", error=error_message)
             await self._append_audit(
@@ -571,6 +682,11 @@ class AgentManager:
             return
 
         agent.pid = handle.pid
+        agent.runtime_model = runtime_model
+        agent.command_name = command_name
+        agent.mcp_enabled = bool(self._profile_metadata(launch_profile).get("mcp_enabled", False))
+        agent.mcp_servers = self._mcp_server_names(workspace)
+        agent.metadata.update(handle.metadata)
         agent.recent_logs = self.runtime_executor.recent_logs(handle, self.settings.default_log_limit)
         self._handles[agent.id] = handle
         self._log_offsets[agent.id] = len(handle.logs)
@@ -668,7 +784,7 @@ class AgentManager:
                     agent.current_task = None
                     agent.updated_at = datetime.now(UTC)
                     if agent.current_job_id and self._jobs[agent.current_job_id].state == JobState.RUNNING:
-                        error_message = self._classify_launch_error(self._extract_runtime_error(handle))
+                        error_message = self._classify_launch_error(self._extract_runtime_error(handle), agent=agent)
                         self._complete_job(
                             agent.current_job_id,
                             JobState.COMPLETED if agent.state == AgentState.STOPPED else JobState.FAILED,
@@ -678,7 +794,7 @@ class AgentManager:
                     await self._publish(
                         "agent.stopped" if agent.state == AgentState.STOPPED else "agent.failed",
                         agent=agent,
-                        message="Process exited cleanly" if agent.state == AgentState.STOPPED else self._classify_launch_error(self._extract_runtime_error(handle)),
+                        message="Process exited cleanly" if agent.state == AgentState.STOPPED else self._classify_launch_error(self._extract_runtime_error(handle), agent=agent),
                     )
                     self._handles.pop(agent_id, None)
                     await self._schedule_pending_agents()
@@ -739,15 +855,51 @@ class AgentManager:
         launch_profile: str,
         workspace: str,
         initial_prompt: str | None,
+        runtime_model: str | None = None,
+        command_name: str | None = None,
     ) -> dict[str, object]:
+        adapter_id = self.launch_profiles.get(launch_profile).adapter_id if self.launch_profiles.get(launch_profile) else ""
         return {
+            "adapter_id": adapter_id,
             "launch_request": {
                 "type": agent_type.value if hasattr(agent_type, "value") else str(agent_type),
                 "launch_profile": launch_profile,
                 "workspace": workspace,
                 "initial_prompt_template": initial_prompt or "",
+                "runtime_model": runtime_model or "",
+                "command_name": command_name or "",
             }
         }
+
+    def _normalize_launch_options(
+        self,
+        launch_profile: str | None,
+        runtime_model: str | None,
+        command_name: str | None,
+    ) -> tuple[str | None, str | None]:
+        profile = self.launch_profiles.get(launch_profile or "")
+        adapter = self._runtime_adapters().get(profile.adapter_id) if profile else None
+        normalized_model = (runtime_model or "").strip() or None
+        normalized_command = (command_name or "").strip() or None
+        if adapter is not None:
+            if not adapter.capabilities.supports_model_selection:
+                normalized_model = None
+            if not adapter.capabilities.supports_command_templates:
+                normalized_command = None
+        return normalized_model, normalized_command
+
+    def _sanitize_agent_runtime_metadata(self, agent: AgentRecord) -> None:
+        normalized_model, normalized_command = self._normalize_launch_options(
+            agent.launch_profile,
+            agent.runtime_model,
+            agent.command_name,
+        )
+        agent.runtime_model = normalized_model
+        agent.command_name = normalized_command
+        launch_request = self._launch_request_from_agent(agent)
+        if launch_request:
+            launch_request["runtime_model"] = normalized_model or ""
+            launch_request["command_name"] = normalized_command or ""
 
     def _launch_request_from_agent(self, agent: AgentRecord) -> dict[str, object]:
         launch_request = agent.metadata.get("launch_request", {})
@@ -756,6 +908,25 @@ class AgentManager:
     def _recent_jobs_for_agent(self, agent_id: str, limit: int = 8) -> list[JobRecord]:
         jobs = [job for job in self._jobs.values() if job.agent_id == agent_id]
         return sorted(jobs, key=lambda item: item.updated_at, reverse=True)[:limit]
+
+    def _profile_metadata(self, launch_profile: str | None) -> dict[str, object]:
+        if not launch_profile:
+            return {}
+        profile = self.launch_profiles.get(launch_profile)
+        return dict(profile.metadata) if profile else {}
+
+    def _runtime_adapters(self) -> dict[str, object]:
+        adapters = getattr(self.runtime_executor, "adapters", None)
+        return adapters if isinstance(adapters, dict) else {}
+
+    def _mcp_server_names(self, workspace: str | None) -> list[str]:
+        names: set[str] = set()
+        for adapter in self._runtime_adapters().values():
+            if not adapter.capabilities.supports_mcp:
+                continue
+            for server in adapter.list_mcp_servers(workspace):
+                names.add(server.name)
+        return sorted(names)
 
     def start_background_tasks(self) -> None:
         if self._heartbeat_task is None or self._heartbeat_task.done():
@@ -793,6 +964,13 @@ class AgentManager:
         statuses = [self._agent_runtime_status(agent) for agent in self._agents.values()]
         warning_count = sum(1 for status in statuses if status.warning_indicator or status.stuck_indicator)
         failed_count = sum(1 for agent in self._agents.values() if agent.state == AgentState.FAILED)
+        mcp_server_records = []
+        for adapter in self._runtime_adapters().values():
+            if adapter.capabilities.supports_mcp:
+                mcp_server_records.extend(adapter.list_mcp_servers(None))
+        adapter_warnings = []
+        for adapter in self._runtime_adapters().values():
+            adapter_warnings.extend(adapter.runtime_status().warnings)
         monitor_state = "healthy"
         if failed_count > 0:
             monitor_state = "warning"
@@ -812,6 +990,9 @@ class AgentManager:
             warning_count=warning_count,
             worker_pool=self.machine.worker_pool,
             resources=self._machine_resource_usage(),
+            mcp_server_count=len(mcp_server_records),
+            mcp_healthy_count=sum(1 for server in mcp_server_records if server.health == "healthy"),
+            adapter_warnings=adapter_warnings,
         )
 
     def _agent_runtime_status(self, agent: AgentRecord) -> AgentRuntimeStatus:
@@ -867,6 +1048,11 @@ class AgentManager:
             current_task=agent.current_task,
             workspace=agent.workspace,
             launch_profile=agent.launch_profile,
+            runtime_model=agent.runtime_model,
+            command_name=agent.command_name,
+            last_output_at=agent.last_output_at,
+            mcp_enabled=agent.mcp_enabled,
+            mcp_servers=agent.mcp_servers,
             pid=agent.pid,
             recent_logs=agent.recent_logs[-10:],
             resources=resources,
@@ -997,18 +1183,35 @@ class AgentManager:
         error_logs = [log.message for log in handle.logs if log.stream in {"stderr", "system", "stdout"} and log.message.strip()]
         return error_logs[-1] if error_logs else f"Process exited with code {handle.exit_code}"
 
-    @staticmethod
-    def _classify_launch_error(message: str) -> str:
+    def _classify_launch_error(self, message: str, *, launch_profile: str | None = None, agent: AgentRecord | None = None) -> str:
         lowered = message.lower()
+        adapter = None
+        adapter_id = None
+        if agent is not None:
+            launch_request = agent.metadata.get("launch_request")
+            adapter_from_request = launch_request.get("adapter_id") if isinstance(launch_request, dict) else None
+            adapter_id = str(agent.metadata.get("adapter_id") or adapter_from_request or "")
+            if not adapter_id and agent.launch_profile:
+                adapter_id = self.launch_profiles.get(agent.launch_profile).adapter_id if self.launch_profiles.get(agent.launch_profile) else None
+        if not adapter_id and launch_profile:
+            adapter_id = self.launch_profiles.get(launch_profile).adapter_id if self.launch_profiles.get(launch_profile) else None
+        if adapter_id:
+            adapter = self._runtime_adapters().get(adapter_id)
+        if adapter is not None:
+            classified = adapter.classify_runtime_error(message)
+            if classified != message:
+                return classified
         if "not installed" in lowered or "not found on path" in lowered or "cli was not found" in lowered:
             return message
         if "workspace does not exist" in lowered or "not a directory" in lowered:
             return "Invalid workspace: the selected directory does not exist or is not accessible"
         if "outside allowed roots" in lowered:
             return "Invalid workspace: the selected directory is outside the configured safe workspace roots"
+        if "429" in lowered or "too many requests" in lowered or "resource_exhausted" in lowered or "quota exceeded" in lowered:
+            return "Gemini CLI hit a rate limit or quota limit. Retry shortly or switch auth/billing configuration."
         if "must specify the gemini_api_key" in lowered or "local auth is missing" in lowered:
             return "Gemini local auth is missing. Run gemini locally once or set GEMINI_API_KEY before starting the supervisor"
-        if "authentication" in lowered or "auth" in lowered or "login" in lowered:
+        if "authentication" in lowered or "auth missing" in lowered or "auth expired" in lowered or "login required" in lowered:
             return "Local CLI authentication is missing or expired on this machine"
         if "maximum active agent limit reached" in lowered:
             return "Maximum active agent limit reached on this machine"
@@ -1084,17 +1287,20 @@ class AgentManager:
             agent.current_task = None
             agent.current_job_id = job.id
             agent.updated_at = datetime.now(UTC)
+            agent.last_output_at = agent.updated_at
             await self._publish("job.completed", agent=agent, job=job, message=summary or "Job completed")
             return True
 
         if event_name == "job.failed":
-            self._complete_job(job.id, JobState.FAILED, summary or "Execution failed", error=error)
+            runtime_error = self._classify_launch_error(error or summary or "Execution failed", agent=agent)
+            self._complete_job(job.id, JobState.FAILED, summary or "Execution failed", error=runtime_error)
             handle.active_job_id = None
             agent.state = AgentState.IDLE
             agent.current_task = None
             agent.current_job_id = job.id
             agent.updated_at = datetime.now(UTC)
-            await self._publish("job.failed", agent=agent, job=job, message=error or summary or "Job failed")
+            agent.last_output_at = agent.updated_at
+            await self._publish("job.failed", agent=agent, job=job, message=runtime_error or summary or "Job failed")
             return True
         return True
 
@@ -1172,3 +1378,9 @@ class AgentManager:
         if job is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
         return job
+
+    def _require_runtime_adapter(self, adapter_id: str):
+        adapter = self._runtime_adapters().get(adapter_id)
+        if adapter is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Runtime adapter not found")
+        return adapter

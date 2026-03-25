@@ -174,6 +174,7 @@ class MainActivity : ComponentActivity() {
                             viewModel.loadMachineDetail(machineId)
                             viewModel.loadLaunchProfiles(machineId)
                             viewModel.loadWorkspaces(machineId)
+                            viewModel.loadLaunchSupport(machineId, "gemini-cli", null)
                         }
                         LaunchedEffect(uiState.launchedAgentId) {
                             val launchedAgentId = uiState.launchedAgentId
@@ -192,6 +193,7 @@ class MainActivity : ComponentActivity() {
                         LaunchAgentScreen(
                             machineName = machineName,
                             profilesState = uiState.launchProfiles,
+                            launchSupportState = uiState.launchSupport,
                             workspacesState = uiState.workspaces,
                             lastWorkspace = uiState.lastWorkspace,
                             actionError = uiState.actionError,
@@ -201,12 +203,16 @@ class MainActivity : ComponentActivity() {
                                 viewModel.loadMachineDetail(machineId)
                                 viewModel.loadLaunchProfiles(machineId)
                                 viewModel.loadWorkspaces(machineId)
+                                viewModel.loadLaunchSupport(machineId, "gemini-cli", uiState.lastWorkspace)
                             },
-                            onLaunch = { type, launchProfile, workspace, initialPrompt ->
-                                viewModel.launchAgent(machineId, type, launchProfile, workspace, initialPrompt)
+                            onLaunchSupportRefresh = { adapterId, workspace ->
+                                viewModel.loadLaunchSupport(machineId, adapterId, workspace)
                             },
-                            onLaunchBestAvailable = { type, launchProfile, workspace, initialPrompt ->
-                                viewModel.launchAgentOnBestMachine(type, launchProfile, workspace, initialPrompt)
+                            onLaunch = { type, launchProfile, workspace, initialPrompt, runtimeModel, commandName ->
+                                viewModel.launchAgent(machineId, type, launchProfile, workspace, initialPrompt, runtimeModel, commandName)
+                            },
+                            onLaunchBestAvailable = { type, launchProfile, workspace, initialPrompt, runtimeModel, commandName ->
+                                viewModel.launchAgentOnBestMachine(type, launchProfile, workspace, initialPrompt, runtimeModel, commandName)
                             }
                         )
                     }

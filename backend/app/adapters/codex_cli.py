@@ -33,14 +33,25 @@ class CodexCliAdapter(CliAgentRuntimeAdapter):
         requires_workspace=True,
         requires_local_auth=False,
         supports_resume=False,
+        supports_model_selection=False,
     )
 
+    def binary_candidates(self) -> tuple[str, ...]:
+        return ("codex.cmd", "codex.exe", "codex")
+
     def preflight(self) -> None:
-        if not self.find_binary("codex.cmd", "codex.exe", "codex"):
+        if not self.find_binary(*self.binary_candidates()):
             raise ValueError("Codex CLI is not installed or not on PATH")
 
-    def run_prompt(self, prompt: str, workspace: str) -> tuple[int, str]:
-        codex_binary = self.find_binary("codex.cmd", "codex.exe", "codex")
+    def run_prompt(
+        self,
+        prompt: str,
+        workspace: str,
+        *,
+        runtime_model: str | None = None,
+        command_name: str | None = None,
+    ) -> tuple[int, str]:
+        codex_binary = self.find_binary(*self.binary_candidates())
         if not codex_binary:
             raise FileNotFoundError("codex CLI was not found on PATH")
         output_file = Path(tempfile.mkstemp(prefix="codex-output-", suffix=".txt")[1])
@@ -60,6 +71,8 @@ class CodexCliAdapter(CliAgentRuntimeAdapter):
             str(output_file),
             prompt,
         ]
+        if runtime_model:
+            command[2:2] = ["--model", runtime_model]
         process = subprocess.Popen(
             command,
             cwd=workspace,

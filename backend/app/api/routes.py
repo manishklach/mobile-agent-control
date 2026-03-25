@@ -15,16 +15,21 @@ from app.models import (
     LaunchAgentRequest,
     LaunchProfilesResponse,
     LogsResponse,
+    McpServersResponse,
     MachineHealthStatus,
     MachineListResponse,
     MachineSelfResponse,
     PromptAgentRequest,
     RestartAgentRequest,
+    RuntimeAdapterStatusResponse,
+    RuntimeAdaptersResponse,
     RunningAgentsResponse,
+    SlashCommandsResponse,
     StartAgentRequest,
     SubmitTaskRequest,
     TaskDetailResponse,
     TaskListResponse,
+    UpsertSlashCommandRequest,
     WorkspacesResponse,
 )
 from app.services.agent_manager import AgentManager
@@ -108,12 +113,80 @@ async def launch_profiles(
     return await manager.get_launch_profiles()
 
 
+@router.get("/runtime/adapters", response_model=RuntimeAdaptersResponse)
+async def runtime_adapters(
+    workspace: str | None = Query(default=None),
+    manager: AgentManager = Depends(get_agent_manager),
+    _: str = Depends(get_current_token),
+) -> RuntimeAdaptersResponse:
+    return await manager.list_runtime_adapters(workspace)
+
+
+@router.get("/runtime/adapters/{adapter_id}", response_model=RuntimeAdapterStatusResponse)
+async def runtime_adapter(
+    adapter_id: str,
+    workspace: str | None = Query(default=None),
+    manager: AgentManager = Depends(get_agent_manager),
+    _: str = Depends(get_current_token),
+) -> RuntimeAdapterStatusResponse:
+    return await manager.get_runtime_adapter(adapter_id, workspace)
+
+
+@router.get("/runtime/adapters/{adapter_id}/commands", response_model=SlashCommandsResponse)
+async def slash_commands(
+    adapter_id: str,
+    workspace: str | None = Query(default=None),
+    manager: AgentManager = Depends(get_agent_manager),
+    _: str = Depends(get_current_token),
+) -> SlashCommandsResponse:
+    return await manager.list_slash_commands(adapter_id, workspace)
+
+
+@router.post("/runtime/adapters/{adapter_id}/commands", response_model=SlashCommandsResponse)
+async def upsert_slash_command(
+    adapter_id: str,
+    request: UpsertSlashCommandRequest,
+    manager: AgentManager = Depends(get_agent_manager),
+    _: str = Depends(get_current_token),
+) -> SlashCommandsResponse:
+    return await manager.upsert_slash_command(
+        adapter_id,
+        name=request.name,
+        prompt=request.prompt,
+        description=request.description,
+        scope=request.scope,
+        workspace=request.workspace,
+    )
+
+
+@router.delete("/runtime/adapters/{adapter_id}/commands/{command_name}", response_model=SlashCommandsResponse)
+async def delete_slash_command(
+    adapter_id: str,
+    command_name: str,
+    scope: str = Query(default="project"),
+    workspace: str | None = Query(default=None),
+    manager: AgentManager = Depends(get_agent_manager),
+    _: str = Depends(get_current_token),
+) -> SlashCommandsResponse:
+    return await manager.delete_slash_command(adapter_id, command_name, scope=scope, workspace=workspace)
+
+
 @router.get("/workspaces", response_model=WorkspacesResponse)
 async def workspaces(
     manager: AgentManager = Depends(get_agent_manager),
     _: str = Depends(get_current_token),
 ) -> WorkspacesResponse:
     return await manager.list_workspaces()
+
+
+@router.get("/machines/{machine_id}/mcp", response_model=McpServersResponse)
+async def machine_mcp(
+    machine_id: str,
+    workspace: str | None = Query(default=None),
+    manager: AgentManager = Depends(get_agent_manager),
+    _: str = Depends(get_current_token),
+) -> McpServersResponse:
+    return await manager.machine_mcp_servers(machine_id, workspace)
 
 
 @router.post("/agents/launch", response_model=AgentDetailResponse, status_code=status.HTTP_201_CREATED)
