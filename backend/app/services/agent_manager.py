@@ -991,7 +991,7 @@ class AgentManager:
 
     def _prune_agents_locked(self) -> None:
         # Keep only the last 5 finished agents to prevent state bloat
-        terminated_states = {AgentState.STOPPED, AgentState.FAILED, AgentState.COMPLETED}
+        terminated_states = {AgentState.STOPPED, AgentState.FAILED}
         finished_agents = [
             agent for agent in self._agents.values() 
             if agent.state in terminated_states
