@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+print("RELOADING AGENT_MANAGER.PY")
+
 import asyncio
 import json
 import os
@@ -43,6 +45,7 @@ from app.models import (
     MachineSelfResponse,
     PromptAgentRequest,
     RestartAgentRequest,
+    RestartMachineResponse,
     RuntimeAdapterRecord,
     RuntimeAdapterStatusResponse,
     RuntimeAdaptersResponse,
@@ -302,9 +305,10 @@ class AgentManager:
     async def start_agent(self, request: StartAgentRequest) -> AgentDetailResponse:
         agent_id = str(uuid4())
         try:
+            self._enforce_capacity()
+            now = datetime.now(UTC)
+            
             async with self._lock:
-                self._enforce_capacity()
-                now = datetime.now(UTC)
                 startup_job = self._create_job(agent_id=agent_id, kind=JobKind.STARTUP, input_text=request.initial_task or "start agent")
                 agent = AgentRecord(
                     id=agent_id,
@@ -336,8 +340,9 @@ class AgentManager:
                     message="Start command accepted by supervisor",
                     details={"type": request.type.value},
                 )
-                await self._schedule_pending_agents()
-                return await self.get_agent(agent_id)
+
+            await self._schedule_pending_agents()
+            return await self.get_agent(agent_id)
         except Exception as exc:
             error_msg = str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
             await self._append_audit(
