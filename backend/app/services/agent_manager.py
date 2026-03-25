@@ -949,12 +949,24 @@ class AgentManager:
                 self._last_heartbeat_at = datetime.now(UTC)
                 machine_health = self._machine_health_status()
                 await self._publish("machine.heartbeat", machine_health=machine_health, message="Supervisor heartbeat")
-                for agent in self._agents.values():
+                for agent in list(self._agents.values()):
                     status_snapshot = self._agent_runtime_status(agent)
                     previous = self._agent_monitor_state.get(agent.id)
                     self._agent_monitor_state[agent.id] = status_snapshot.monitor_state
                     if status_snapshot.stuck_indicator and previous != "stuck":
                         await self._publish("agent.stuck", agent=agent, agent_status=status_snapshot, message=status_snapshot.warning_message or "Agent appears stalled")
+                    if (
+                        status_snapshot.stuck_indicator
+                        and status_snapshot.silence_seconds is not None
+                        and status_snapshot.silence_seconds >= self.settings.monitoring_force_fail_after_seconds
+                        and agent.state == AgentState.RUNNING
+                    ):
+                        await self._fail_stuck_agent(
+                            agent.id,
+                            status_snapshot.warning_message
+                            or f"Agent stalled with no logs for {status_snapshot.silence_seconds}s",
+                        )
+                        continue
                     elif status_snapshot.warning_indicator and previous not in {"warning", "stuck"}:
                         await self._publish("agent.warning", agent=agent, agent_status=status_snapshot, message=status_snapshot.warning_message or "Agent needs attention")
                     elif previous in {"warning", "stuck"} and status_snapshot.monitor_state not in {"warning", "stuck"}:
@@ -1040,6 +1052,7 @@ class AgentManager:
             state=agent.state,
             monitor_state=monitor_state,
             elapsed_seconds=elapsed_seconds,
+            silence_seconds=silence_seconds,
             last_heartbeat=last_heartbeat,
             last_log_timestamp=last_log_timestamp,
             warning_indicator=warning_indicator,
@@ -1251,6 +1264,38 @@ class AgentManager:
                 continue
             agent.recent_logs = (agent.recent_logs + [log])[-self.settings.default_log_limit :]
             await self._publish("agent.log", agent=agent, log=log, message=log.message)
+
+    async def _fail_stuck_agent(self, agent_id: str, reason: str) -> None:
+        agent = self._agents.get(agent_id)
+        if agent is None or agent.state != AgentState.RUNNING:
+            return
+        handle = self._handles.get(agent_id)
+        if handle is not None:
+            await self._executor_for(agent).stop(handle)
+            agent.recent_logs = self._executor_for(agent).recent_logs(handle, self.settings.default_log_limit)
+            handle.active_job_id = None
+        monitor = self._process_monitors.pop(agent_id, None)
+        if monitor:
+            monitor.cancel()
+        self._handles.pop(agent_id, None)
+        agent.state = AgentState.FAILED
+        agent.pid = None
+        agent.worker_id = None
+        agent.current_task = None
+        agent.updated_at = datetime.now(UTC)
+        if agent.current_job_id and self._jobs[agent.current_job_id].state in {JobState.QUEUED, JobState.RUNNING}:
+            self._complete_job(agent.current_job_id, JobState.FAILED, "Execution stalled", error=reason)
+            await self._publish("job.failed", agent=agent, job=self._jobs[agent.current_job_id], message=reason)
+        await self._append_audit(
+            action="agent_stuck_timeout",
+            target_type="agent",
+            target_id=agent_id,
+            status=AuditStatus.REJECTED,
+            message=reason,
+        )
+        await self._publish("agent.failed", agent=agent, message=reason)
+        await self._refresh_machine()
+        await self._schedule_pending_agents()
 
     async def _handle_internal_event(self, agent: AgentRecord, handle: ProcessHandle, log) -> bool:
         if log.stream != "stdout" or not log.message.startswith(EVENT_PREFIX):

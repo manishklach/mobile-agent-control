@@ -58,6 +58,7 @@ class AppSettings(BaseSettings):
     monitoring_heartbeat_interval_seconds: int = 10
     monitoring_warning_after_seconds: int = 60
     monitoring_stuck_after_seconds: int = 180
+    monitoring_force_fail_after_seconds: int = 300
     supported_controls: list[str] = Field(
         default_factory=lambda: [
             "start_agent",

@@ -10,6 +10,11 @@ from app.core.config import LaunchProfileConfig
 from app.executors.base import Executor, ProcessHandle
 from app.models import AgentType, LogEntry
 
+try:
+    import psutil
+except ImportError:  # pragma: no cover - optional runtime dependency
+    psutil = None
+
 
 class CliRuntimeExecutor(Executor):
     def __init__(
@@ -95,17 +100,26 @@ class CliRuntimeExecutor(Executor):
         if process is None:
             return
         self.append_runtime_log(handle, "Supervisor requested stop", "system")
-        if process.stdin:
-            process.stdin.write(b"exit\n")
-            await process.stdin.drain()
+        try:
+            if process.stdin:
+                process.stdin.write(b"exit\n")
+                await process.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
         try:
             await asyncio.wait_for(process.wait(), timeout=5)
         except asyncio.TimeoutError:
-            process.terminate()
-            await process.wait()
+            self.append_runtime_log(handle, "Graceful stop timed out; terminating runtime process tree", "system")
+            await self._terminate_process_tree(process.pid)
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
         handle.stopped_at = datetime.now(UTC)
         handle.finished_at = handle.stopped_at
         handle.exit_code = process.returncode
+        self._processes.pop(handle.agent_id, None)
 
     async def prompt(self, handle: ProcessHandle, prompt: str) -> None:
         process = self._processes.get(handle.agent_id)
@@ -151,3 +165,29 @@ class CliRuntimeExecutor(Executor):
         if adapter is None:
             raise ValueError(f"Unknown runtime adapter: {adapter_id}")
         return adapter
+
+    async def _terminate_process_tree(self, root_pid: int | None) -> None:
+        if root_pid is None:
+            return
+        if psutil is None:
+            return
+        try:
+            root = psutil.Process(root_pid)
+        except psutil.Error:
+            return
+        descendants = root.children(recursive=True)
+        for child in reversed(descendants):
+            try:
+                child.terminate()
+            except psutil.Error:
+                continue
+        try:
+            root.terminate()
+        except psutil.Error:
+            pass
+        gone, alive = psutil.wait_procs(descendants + [root], timeout=3)
+        for proc in alive:
+            try:
+                proc.kill()
+            except psutil.Error:
+                continue

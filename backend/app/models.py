@@ -290,6 +290,7 @@ class AgentRuntimeStatus(BaseModel):
     state: AgentState
     monitor_state: str
     elapsed_seconds: int = 0
+    silence_seconds: int | None = None
     last_heartbeat: datetime | None = None
     last_log_timestamp: datetime | None = None
     warning_indicator: bool = False
