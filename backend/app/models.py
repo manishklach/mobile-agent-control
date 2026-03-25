@@ -55,6 +55,15 @@ class ResourceUsage(BaseModel):
     memory_mb: float | None = None
 
 
+class DiagnosisResponse(BaseModel):
+    agent_id: str
+    is_failed: bool
+    cause: str | None = None
+    suggestion: str | None = None
+    logs_analyzed: int
+    timestamp: datetime
+
+
 class WorkerPoolState(BaseModel):
     desired_workers: int
     busy_workers: int
@@ -247,12 +256,22 @@ class AgentDetailResponse(BaseModel):
     current_job: JobRecord | None = None
     latest_completed_job: JobRecord | None = None
     recent_jobs: list[JobRecord] = Field(default_factory=list)
+    latest_diagnosis: DiagnosisResponse | None = None
 
 
 class StartAgentRequest(BaseModel):
     type: AgentType
     initial_task: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RestartMachineRequest(BaseModel):
+    reason: str | None = None
+
+
+class RestartMachineResponse(BaseModel):
+    message: str
+    machine_id: str
 
 
 class LaunchAgentRequest(BaseModel):

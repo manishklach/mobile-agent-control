@@ -63,8 +63,9 @@ class CliRuntimeExecutor(Executor):
         env["AGENT_RUNTIME_MODEL"] = runtime_model or ""
         env["AGENT_COMMAND_NAME"] = command_name or ""
         existing_pythonpath = env.get("PYTHONPATH", "")
-        backend_pythonpath = str(self.backend_root)
+        backend_pythonpath = str(self.backend_root.resolve())
         env["PYTHONPATH"] = backend_pythonpath if not existing_pythonpath else backend_pythonpath + os.pathsep + existing_pythonpath
+        env["PYTHONUNBUFFERED"] = "1"
 
         process = await asyncio.create_subprocess_exec(
             *adapter.build_launch_command(self.backend_root, self.backend_python),
@@ -159,6 +160,7 @@ class CliRuntimeExecutor(Executor):
             if not line:
                 return
             self.append_runtime_log(handle, line.decode("utf-8", errors="replace").rstrip(), stream_name)
+            await asyncio.sleep(0)
 
     def _require_adapter(self, adapter_id: str) -> CliAgentRuntimeAdapter:
         adapter = self.adapters.get(adapter_id)

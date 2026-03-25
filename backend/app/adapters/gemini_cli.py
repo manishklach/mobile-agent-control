@@ -180,17 +180,23 @@ class GeminiCliAdapter(CliAgentRuntimeAdapter):
     def classify_runtime_error(self, message: str, exit_code: int | None = None) -> str:
         lowered = message.lower()
         if "429" in lowered or "too many requests" in lowered or "resource_exhausted" in lowered:
-            return "Gemini CLI hit a rate limit or quota limit. Retry shortly or switch auth/billing configuration."
-        if "api key not valid" in lowered or "invalid api key" in lowered:
-            return "Gemini CLI API key is invalid on this machine"
+            return "Gemini API quota exceeded or rate limited. Check your billing status or wait a minute before retrying."
+        if "403" in lowered or "permission_denied" in lowered:
+            return "Gemini API permission denied. Your API key might not have access to the requested model or project."
+        if "api key not valid" in lowered or "invalid api key" in lowered or "401" in lowered:
+            return "Gemini CLI API key is invalid or expired on this machine. Run 'gemini' locally to re-authenticate."
+        if "safety" in lowered or "finish_reason: safety" in lowered:
+            return "The prompt was blocked by Gemini safety filters. Try rephrasing the request."
+        if "connection" in lowered or "timeout" in lowered or "dns" in lowered or "network" in lowered:
+            return "Network error: Gemini CLI could not reach the Google AI servers. Check the machine's internet connection."
         if "selected auth type" in lowered or "login" in lowered or "oauth" in lowered or "auth" in lowered:
-            return "Gemini CLI local auth is missing or expired on this machine"
+            return "Gemini CLI local auth is missing or expired. Run 'gemini' locally to refresh credentials."
         if "must specify the gemini_api_key" in lowered:
-            return "Gemini CLI needs local auth. Set GEMINI_API_KEY or run gemini locally once on the machine."
+            return "Gemini CLI needs an API key. Set GEMINI_API_KEY in the supervisor environment."
         if "model" in lowered and "not found" in lowered:
-            return "The requested Gemini model is not available for this local CLI configuration"
-        if exit_code is not None and exit_code != 0 and "exit code" not in lowered:
-            return f"{message} (Gemini exit code {exit_code})"
+            return f"The requested model is not available for this Gemini CLI configuration. (Exit code {exit_code})"
+        if exit_code is not None and exit_code != 0:
+            return f"Gemini process failed (Exit code {exit_code}). Last output: {message[:120]}..."
         return super().classify_runtime_error(message, exit_code)
 
     def run_prompt(
@@ -223,11 +229,17 @@ class GeminiCliAdapter(CliAgentRuntimeAdapter):
         )
         stdout_lines: list[str] = []
         stderr_lines: list[str] = []
-        stdout_thread = threading.Thread(target=_stream_pipe, args=(process.stdout, stdout_lines, print), daemon=True)
-        stderr_thread = threading.Thread(target=_stream_pipe, args=(process.stderr, stderr_lines, lambda text: print(text, file=os.sys.stderr)), daemon=True)
+        stdout_thread = threading.Thread(target=_stream_pipe, args=(process.stdout, stdout_lines, lambda _: None), daemon=True)
+        stderr_thread = threading.Thread(target=_stream_pipe, args=(process.stderr, stderr_lines, lambda _: None), daemon=True)
         stdout_thread.start()
         stderr_thread.start()
-        exit_code = process.wait()
+        try:
+            exit_code = process.wait(timeout=600)  # 10 minute safety timeout
+        except subprocess.TimeoutExpired:
+            process.kill()
+            exit_code = -1
+            stderr_lines.append("Gemini CLI execution timed out after 10 minutes")
+        
         stdout_thread.join(timeout=2)
         stderr_thread.join(timeout=2)
         combined_output = "\n".join([*stdout_lines, *stderr_lines]).strip()
@@ -355,6 +367,35 @@ class GeminiCliAdapter(CliAgentRuntimeAdapter):
     def extract_summary(output_text: str) -> str:
         if not output_text:
             return ""
+        
+        # Try to find a JSON block in the output
+        try:
+            # We look for the last occurrence of { and } to find the main response JSON
+            start = output_text.rfind("{")
+            end = output_text.rfind("}")
+            
+            if start != -1 and end != -1 and end > start:
+                # We might have multi-line JSON, so we try to find the start of the object
+                # by looking backwards from the last '}'
+                brace_count = 0
+                for i in range(end, -1, -1):
+                    if output_text[i] == "}":
+                        brace_count += 1
+                    elif output_text[i] == "{":
+                        brace_count -= 1
+                        if brace_count == 0:
+                            json_str = output_text[i:end+1]
+                            try:
+                                payload = json.loads(json_str)
+                                response = payload.get("response")
+                                if isinstance(response, str) and response.strip():
+                                    return response.strip()
+                            except json.JSONDecodeError:
+                                continue
+        except Exception:
+            pass
+
+        # Fallback to single-line logic if multi-line parsing fails
         stripped = output_text.strip()
         json_lines = [line for line in stripped.splitlines() if line.strip().startswith("{") and line.strip().endswith("}")]
         for line in reversed(json_lines):
@@ -365,4 +406,5 @@ class GeminiCliAdapter(CliAgentRuntimeAdapter):
             response = payload.get("response")
             if isinstance(response, str) and response.strip():
                 return response.strip()
+        
         return stripped

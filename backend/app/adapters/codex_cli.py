@@ -54,7 +54,12 @@ class CodexCliAdapter(CliAgentRuntimeAdapter):
         codex_binary = self.find_binary(*self.binary_candidates())
         if not codex_binary:
             raise FileNotFoundError("codex CLI was not found on PATH")
-        output_file = Path(tempfile.mkstemp(prefix="codex-output-", suffix=".txt")[1])
+        fd, path_str = tempfile.mkstemp(prefix="codex-output-", suffix=".txt")
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        output_file = Path(path_str)
         env = self.environment_with(
             {
                 "CODEX_INTERNAL_ORIGINATOR_OVERRIDE": "Agent Control Mobile Control Plane",
@@ -90,10 +95,16 @@ class CodexCliAdapter(CliAgentRuntimeAdapter):
         stderr_thread = threading.Thread(target=_stream_pipe, args=(process.stderr, stderr_lines, lambda text: print(text, file=os.sys.stderr)), daemon=True)
         stdout_thread.start()
         stderr_thread.start()
-        exit_code = process.wait()
+        try:
+            exit_code = process.wait(timeout=600)  # 10 minute safety timeout
+        except subprocess.TimeoutExpired:
+            process.kill()
+            exit_code = -1
+            stderr_lines.append("Codex CLI execution timed out after 10 minutes")
+        
         stdout_thread.join(timeout=2)
         stderr_thread.join(timeout=2)
-        summary = output_file.read_text(encoding="utf-8").strip() if output_file.exists() else "\n".join(stdout_lines).strip()
+        summary = output_file.read_text(encoding="utf-8", errors="replace").strip() if output_file.exists() else "\n".join(stdout_lines).strip()
         try:
             output_file.unlink(missing_ok=True)
         except PermissionError:

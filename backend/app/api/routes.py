@@ -11,6 +11,7 @@ from app.models import (
     AgentListResponse,
     AgentMetricsResponse,
     AuditLogResponse,
+    DiagnosisResponse,
     HealthResponse,
     LaunchAgentRequest,
     LaunchProfilesResponse,
@@ -21,6 +22,8 @@ from app.models import (
     MachineSelfResponse,
     PromptAgentRequest,
     RestartAgentRequest,
+    RestartMachineRequest,
+    RestartMachineResponse,
     RuntimeAdapterStatusResponse,
     RuntimeAdaptersResponse,
     RunningAgentsResponse,
@@ -52,6 +55,15 @@ async def machine_self(
     _: str = Depends(get_current_token),
 ) -> MachineSelfResponse:
     return await manager.machine_self()
+
+
+@router.post("/machines/self/restart", response_model=RestartMachineResponse)
+async def restart_machine(
+    request: RestartMachineRequest,
+    manager: AgentManager = Depends(get_agent_manager),
+    _: str = Depends(get_current_token),
+) -> RestartMachineResponse:
+    return await manager.restart_self(request.reason)
 
 
 @router.get("/machines", response_model=MachineListResponse)
@@ -264,6 +276,15 @@ async def agent_metrics(
     _: str = Depends(get_current_token),
 ) -> AgentMetricsResponse:
     return await manager.get_agent_metrics(agent_id)
+
+
+@router.get("/agents/{agent_id}/diagnose", response_model=DiagnosisResponse)
+async def diagnose_agent(
+    agent_id: str,
+    manager: AgentManager = Depends(get_agent_manager),
+    _: str = Depends(get_current_token),
+) -> DiagnosisResponse:
+    return await manager.diagnose_agent(agent_id)
 
 
 @router.get("/audit", response_model=AuditLogResponse)

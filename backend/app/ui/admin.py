@@ -248,6 +248,7 @@ ADMIN_HTML = """<!doctype html>
               <h2>Fleet Dashboard</h2>
               <div class="subtle">At-a-glance health, activity, and active runtime state for this machine supervisor.</div>
             </div>
+            <button class="secondary" id="restartSupervisor">Restart Supervisor</button>
           </div>
           <div id="machineKpis" class="kpis"></div>
         </section>
@@ -828,6 +829,19 @@ ADMIN_HTML = """<!doctype html>
         flash("Restart failed: " + error.message, "bad");
       }
     }
+    async function restartSupervisor() {
+      if (!confirm("Are you sure you want to restart the supervisor? All active agents will be stopped.")) return;
+      try {
+        await api("/machines/self/restart", {
+          method: "POST",
+          body: JSON.stringify({ reason: "Restarted from web UI" })
+        });
+        flash("Supervisor restart initiated. Reconnecting...", "ok");
+        setTimeout(function() { window.location.reload(); }, 3000);
+      } catch (error) {
+        flash("Supervisor restart failed: " + error.message, "bad");
+      }
+    }
     function connectWs() {
       const config = getConfig();
       if (!config.baseUrl || !config.token) return;
@@ -876,6 +890,7 @@ ADMIN_HTML = """<!doctype html>
     el("sendPrompt").addEventListener("click", sendPrompt);
     el("stopAgent").addEventListener("click", stopAgent);
     el("restartAgent").addEventListener("click", restartAgent);
+    el("restartSupervisor").addEventListener("click", restartSupervisor);
     loadConfig();
     refreshAll();
   </script>

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import subprocess
+import sys
 from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,6 +27,7 @@ from app.models import (
     AuditEntry,
     AuditLogResponse,
     AuditStatus,
+    DiagnosisResponse,
     HealthResponse,
     JobKind,
     JobRecord,
@@ -107,6 +111,7 @@ class AgentManager:
             },
         )
         self._agents: dict[str, AgentRecord] = {}
+        self._diagnoses: dict[str, DiagnosisResponse] = {}
         self._jobs: dict[str, JobRecord] = {}
         self._handles: dict[str, ProcessHandle] = {}
         self._audits: list[AuditEntry] = []
@@ -179,7 +184,13 @@ class AgentManager:
             (job for job in recent_jobs if job.state in {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}),
             None,
         )
-        return AgentDetailResponse(agent=agent, current_job=current_job, latest_completed_job=latest_completed_job, recent_jobs=recent_jobs)
+        return AgentDetailResponse(
+            agent=agent,
+            current_job=current_job,
+            latest_completed_job=latest_completed_job,
+            recent_jobs=recent_jobs,
+            latest_diagnosis=self._diagnoses.get(agent_id),
+        )
 
     async def get_launch_profiles(self) -> LaunchProfilesResponse:
         profiles = [LaunchProfileRecord(**profile.public_dict()) for profile in self.launch_profiles.values()]
@@ -391,6 +402,7 @@ class AgentManager:
             else:
                 self._pending_queue.append(agent_id)
                 await self._publish("agent.pending", agent=agent, job=startup_job, message="Launch queued; waiting for worker capacity")
+                await self._schedule_pending_agents()
             return await self.get_agent(agent_id)
 
     async def stop_agent(self, agent_id: str) -> AgentDetailResponse:
@@ -493,6 +505,81 @@ class AgentManager:
         agent = self._require_agent(agent_id)
         return AgentMetricsResponse(agent_id=agent_id, status=self._agent_runtime_status(agent))
 
+    async def diagnose_agent(self, agent_id: str) -> DiagnosisResponse:
+        async with self._lock:
+            agent = self._require_agent(agent_id)
+            handle = self._handles.get(agent_id)
+            logs = []
+            if handle:
+                logs = self._executor_for(agent).recent_logs(handle, 20)
+            else:
+                logs = agent.recent_logs[-20:]
+
+            is_failed = agent.state == AgentState.FAILED
+            cause = None
+            suggestion = None
+
+            if is_failed and logs:
+                cause, suggestion = await self._diagnose_logs_with_gemini(agent, logs)
+            elif not is_failed:
+                cause = "Agent is not in a failed state"
+                suggestion = "No diagnosis needed"
+            else:
+                cause = "No logs available for analysis"
+                suggestion = "Try restarting the agent"
+
+            diagnosis = DiagnosisResponse(
+                agent_id=agent_id,
+                is_failed=is_failed,
+                cause=cause,
+                suggestion=suggestion,
+                logs_analyzed=len(logs),
+                timestamp=datetime.now(UTC),
+            )
+            self._diagnoses[agent_id] = diagnosis
+            return diagnosis
+
+    async def _diagnose_logs_with_gemini(self, agent: AgentRecord, logs: list[LogEntry]) -> tuple[str, str]:
+        """
+        Uses a separate Gemini process to analyze the failure logs of another agent.
+        """
+        log_text = "\n".join([f"[{log.stream}] {log.message}" for log in logs])
+        prompt = (
+            f"Analyze these failure logs for a coding agent of type '{agent.type.value}'.\n"
+            f"Context: Workspace is {agent.workspace}, Profile is {agent.launch_profile}.\n\n"
+            f"LOGS:\n{log_text}\n\n"
+            "Identify the root cause of the failure and suggest a concrete fix.\n"
+            "Format your response as a JSON object with 'cause' and 'suggestion' keys. "
+            "Keep it concise for a mobile screen."
+        )
+
+        adapter = self.runtime_executor.adapters.get("gemini-cli")
+        if not adapter or not agent.workspace:
+            return "Unable to run Gemini diagnostic adapter", "Check machine logs manually"
+
+        try:
+            # We run a one-off prompt using the Gemini adapter to analyze the logs
+            exit_code, output = await asyncio.to_thread(
+                adapter.run_prompt,
+                prompt=prompt,
+                workspace=agent.workspace,
+            )
+            if exit_code == 0:
+                try:
+                    import json
+                    # Try to find a JSON block in the output
+                    start = output.find("{")
+                    end = output.rfind("}")
+                    if start >= 0 and end >= 0:
+                        data = json.loads(output[start:end+1])
+                        return str(data.get("cause", "Unknown")), str(data.get("suggestion", "No suggestion available"))
+                except Exception:
+                    pass
+                return "Diagnostic completed", output[:200]
+            return f"Diagnostic failed (Exit code {exit_code})", output[:200]
+        except Exception as exc:
+            return "Diagnostic tool crashed", str(exc)
+
     async def get_audit_log(self, limit: int = 100) -> AuditLogResponse:
         return AuditLogResponse(entries=self._audits[-limit:])
 
@@ -543,7 +630,24 @@ class AgentManager:
         return job
 
     async def _schedule_pending_agents(self) -> None:
-        while self._pending_queue and self._has_available_worker_slot():
+        while self._pending_queue:
+            if not self._has_available_worker_slot():
+                # Attempt to evict an IDLE agent to make room
+                idle_agents = [
+                    a for a in self._agents.values()
+                    if a.state == AgentState.IDLE and a.worker_id
+                ]
+                if idle_agents:
+                    # Sort by last output (oldest first) or updated_at
+                    idle_agents.sort(key=lambda x: x.last_output_at or x.updated_at)
+                    to_evict = idle_agents[0]
+                    await self.stop_agent(to_evict.id)
+                    # Loop will check capacity again
+                    continue
+                else:
+                    # No slots and no idle agents to evict
+                    break
+
             agent_id = self._pending_queue.popleft()
             agent = self._agents.get(agent_id)
             if agent is None or agent.state != AgentState.PENDING:
@@ -1011,11 +1115,15 @@ class AgentManager:
         now = datetime.now(UTC)
         handle = self._handles.get(agent.id)
         last_heartbeat = self._coerce_datetime(agent.metadata.get("last_heartbeat_at")) or agent.updated_at
-        last_log_timestamp = None
-        if agent.recent_logs:
-            last_log_timestamp = agent.recent_logs[-1].timestamp
-        elif handle and handle.logs:
-            last_log_timestamp = handle.logs[-1].timestamp
+        
+        # Determine the most recent activity timestamp
+        last_log_timestamp = agent.last_output_at
+        if not last_log_timestamp:
+            if agent.recent_logs:
+                last_log_timestamp = agent.recent_logs[-1].timestamp
+            elif handle and handle.logs:
+                last_log_timestamp = handle.logs[-1].timestamp
+        
         elapsed_seconds = int((now - (agent.started_at or agent.updated_at)).total_seconds()) if (agent.started_at or agent.updated_at) else 0
         silence_seconds = int((now - last_log_timestamp).total_seconds()) if last_log_timestamp else None
         heartbeat_age_seconds = int((now - last_heartbeat).total_seconds()) if last_heartbeat else None
@@ -1259,7 +1367,12 @@ class AgentManager:
             return
         self._log_offsets[agent_id] = len(handle.logs)
         agent = self._agents[agent_id]
+        now = datetime.now(UTC)
         for log in new_logs:
+            # Every log entry, internal or not, counts as activity
+            agent.last_output_at = log.timestamp
+            agent.updated_at = now
+            
             if await self._handle_internal_event(agent, handle, log):
                 continue
             agent.recent_logs = (agent.recent_logs + [log])[-self.settings.default_log_limit :]
@@ -1429,3 +1542,26 @@ class AgentManager:
         if adapter is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Runtime adapter not found")
         return adapter
+
+    async def restart_self(self, reason: str | None = None) -> RestartMachineResponse:
+        await self._append_audit(
+            action="restart_supervisor",
+            target_type="machine",
+            target_id=self.machine.id,
+            status=AuditStatus.ACCEPTED,
+            message=reason or "Supervisor restart requested",
+        )
+        
+        # Give some time for the response to be sent and audit to be persisted
+        async def delayed_restart():
+            await asyncio.sleep(1)
+            # Use the same python executable and arguments to restart
+            subprocess.Popen([sys.executable] + sys.argv)
+            os._exit(0)
+            
+        asyncio.create_task(delayed_restart())
+        
+        return RestartMachineResponse(
+            message="Supervisor is restarting...",
+            machine_id=self.machine.id
+        )
