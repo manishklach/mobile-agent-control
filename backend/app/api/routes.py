@@ -210,6 +210,15 @@ async def launch_agent(
     return await manager.launch_agent(request)
 
 
+@router.post("/agents/clear-terminated")
+async def clear_terminated_agents(
+    manager: AgentManager = Depends(get_agent_manager),
+    _: str = Depends(get_current_token),
+):
+    await manager.clear_terminated_agents()
+    return {"status": "ok"}
+
+
 @router.post("/agents/{agent_id}/stop", response_model=AgentDetailResponse)
 async def stop_agent(
     agent_id: str,
