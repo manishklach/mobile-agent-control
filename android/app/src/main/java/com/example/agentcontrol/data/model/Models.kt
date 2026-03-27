@@ -149,6 +149,19 @@ data class AgentDetailResponse(
 )
 
 @Serializable
+data class AgentOverviewRecord(
+    val agent: AgentRecord,
+    val status: AgentRuntimeStatus,
+    @SerialName("current_job") val currentJob: JobRecord? = null,
+    @SerialName("latest_completed_job") val latestCompletedJob: JobRecord? = null
+)
+
+@Serializable
+data class AgentOverviewListResponse(
+    val agents: List<AgentOverviewRecord>
+)
+
+@Serializable
 data class LogsResponse(
     @SerialName("agent_id") val agentId: String,
     val logs: List<LogEntry>
@@ -169,6 +182,7 @@ data class AgentRuntimeStatus(
     val state: String,
     @SerialName("monitor_state") val monitorState: String,
     @SerialName("elapsed_seconds") val elapsedSeconds: Int,
+    @SerialName("silence_seconds") val silenceSeconds: Int? = null,
     @SerialName("last_heartbeat") val lastHeartbeat: String? = null,
     @SerialName("last_log_timestamp") val lastLogTimestamp: String? = null,
     @SerialName("warning_indicator") val warningIndicator: Boolean = false,
@@ -393,6 +407,38 @@ data class DashboardActivityItem(
     val detail: String
 )
 
+data class DashboardSummary(
+    val connectedMachines: Int = 0,
+    val onlineMachines: Int = 0,
+    val offlineMachines: Int = 0,
+    val runningAgents: Int = 0,
+    val warningAgents: Int = 0,
+    val stuckAgents: Int = 0,
+    val failedAgents: Int = 0,
+    val queuedTasks: Int = 0,
+    val recentCompletionsLastHour: Int = 0
+)
+
+data class DashboardMachineHealthCard(
+    val machine: MachineOverview,
+    val activeAgentCount: Int = 0,
+    val unhealthy: Boolean = false
+)
+
+data class DashboardSnapshot(
+    val summary: DashboardSummary = DashboardSummary(),
+    val agents: List<DashboardAgentCard> = emptyList(),
+    val machines: List<DashboardMachineHealthCard> = emptyList(),
+    val recentActivity: List<DashboardActivityItem> = emptyList(),
+    val lastUpdatedEpochMs: Long? = null
+)
+
+data class DashboardAgentCard(
+    val machine: MachineConfig,
+    val machineHealth: MachineHealthStatus? = null,
+    val overview: AgentOverviewRecord
+)
+
 val AgentRecord.launchRequest: JsonObject?
     get() = metadata["launch_request"]?.jsonObject
 
@@ -404,3 +450,11 @@ val AgentRecord.runtimeSummary: String?
 
 val LaunchProfileRecord.defaultModel: String?
     get() = metadata["default_model"]?.jsonPrimitive?.contentOrNull?.ifBlank { null }
+
+val AgentOverviewRecord.primaryIssue: String?
+    get() = when {
+        agent.state.equals("failed", ignoreCase = true) -> latestCompletedJob?.error ?: latestCompletedJob?.summary
+        status.monitorState.equals("stuck", ignoreCase = true) -> status.warningMessage
+        status.monitorState.equals("warning", ignoreCase = true) -> status.warningMessage
+        else -> null
+    }

@@ -66,11 +66,11 @@ class MainActivity : ComponentActivity() {
                             viewModel.loadDashboardActivity()
                         }
                         DashboardScreen(
-                            machinesState = uiState.machines,
-                            runningAgentsState = uiState.runningAgents,
-                            activityState = uiState.dashboardActivity,
+                            snapshotState = uiState.dashboardSnapshot,
                             actionMessage = uiState.actionMessage,
                             actionError = uiState.actionError,
+                            streamStatus = uiState.streamStatus,
+                            hasRetryLaunch = uiState.lastLaunchRequest != null,
                             onMachinesClick = { navController.navigate(Route.Machines.value) },
                             onRunningAgentsClick = { navController.navigate(Route.RunningAgents.value) },
                             onSettingsClick = { navController.navigate(Route.Settings.value) },
@@ -87,7 +87,24 @@ class MainActivity : ComponentActivity() {
                                 viewModel.selectMachine(machineId)
                                 navController.navigate("machine/$machineId/agent/$agentId")
                             },
-                            onQuickDispatch = { type, task -> viewModel.startAgentOnBestMachine(type, task) }
+                            onQuickDispatch = { type, task -> viewModel.startAgentOnBestMachine(type, task) },
+                            onRetryLastLaunch = { viewModel.retryLastLaunch() },
+                            onOpenLaunch = {
+                                val machineId = uiState.selectedMachineId
+                                    ?: (uiState.machines as? com.example.agentcontrol.ui.viewmodel.UiState.Success)
+                                        ?.data?.firstOrNull { it.isOnline }?.config?.id
+                                    ?: (uiState.machines as? com.example.agentcontrol.ui.viewmodel.UiState.Success)
+                                        ?.data?.firstOrNull()?.config?.id
+                                if (machineId != null) {
+                                    viewModel.selectMachine(machineId)
+                                    navController.navigate("machine/$machineId/launch")
+                                } else {
+                                    navController.navigate(Route.Settings.value)
+                                }
+                            },
+                            onOpenRecentFailures = { navController.navigate(Route.RunningAgents.value) },
+                            onStopAgent = { machineId, agentId -> viewModel.stopAgent(machineId, agentId) },
+                            onRestartAgent = { machineId, agentId -> viewModel.restartAgent(machineId, agentId, "Restarted from dashboard") }
                         )
                     }
                     composable(Route.Machines.value) {

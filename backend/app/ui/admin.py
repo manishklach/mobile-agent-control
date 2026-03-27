@@ -74,9 +74,10 @@ ADMIN_HTML = r"""<!doctype html>
     
     .main-grid {
       display: grid;
-      grid-template-columns: 380px 1fr;
+      grid-template-columns: minmax(340px, 0.95fr) minmax(0, 1.4fr);
       gap: 24px;
     }
+    .surface-stack { display: flex; flex-direction: column; gap: 20px; }
     
     .surface {
       background: var(--panel);
@@ -150,10 +151,38 @@ ADMIN_HTML = r"""<!doctype html>
       border-radius: var(--radius-sm);
       margin-bottom: 8px;
       cursor: pointer;
+      background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
     }
     .agent-card.selected { border-color: var(--brand); background: var(--brand-soft); }
     .agent-card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 4px; }
     .agent-name { font-weight: 700; font-size: 13px; }
+    .agent-meta { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+    .pill {
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      background: var(--panel-alt);
+      border: 1px solid var(--line);
+      color: var(--ink);
+    }
+    .snippet {
+      margin-top: 8px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: var(--panel-alt);
+      font-size: 12px;
+      color: var(--ink);
+    }
+    .issue {
+      margin-top: 8px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: #fff7ed;
+      color: #9a3412;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .actions-row { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
     
     .chip {
       padding: 2px 6px;
@@ -162,9 +191,10 @@ ADMIN_HTML = r"""<!doctype html>
       font-weight: 700;
       text-transform: uppercase;
     }
-    .status-online, .status-idle, .status-completed, .status-healthy { background: var(--good); color: var(--good-ink); }
-    .status-running, .status-starting, .status-pending { background: var(--warn); color: var(--warn-ink); }
-    .status-failed, .status-stopped, .status-offline { background: var(--bad); color: var(--bad-ink); }
+    .status-online, .status-idle, .status-completed, .status-healthy, .status-live { background: var(--good); color: var(--good-ink); }
+    .status-running, .status-starting, .status-pending, .status-warning, .status-stopping, .status-connecting, .status-reconnecting { background: var(--warn); color: var(--warn-ink); }
+    .status-failed, .status-stopped, .status-offline, .status-stuck { background: var(--bad); color: var(--bad-ink); }
+    .status-stale, .status-info { background: var(--brand-soft); color: var(--brand); }
     
     .log-view {
       background: #0f172a;
@@ -204,8 +234,14 @@ ADMIN_HTML = r"""<!doctype html>
     .flash.ok { background: var(--good); color: var(--good-ink); }
     .flash.bad { background: var(--bad); color: var(--bad-ink); }
 
-    .scroll { max-height: 400px; overflow-y: auto; }
+    .scroll { max-height: 400px; overflow-y: auto; -webkit-overflow-scrolling: touch; }
     .empty { padding: 20px; text-align: center; color: var(--muted); font-size: 13px; }
+    .mini-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+    .section-subtitle { font-size: 12px; color: var(--muted); margin-top: 4px; }
+    .timeline-item { padding: 10px; border:1px solid var(--line); border-radius: var(--radius-sm); margin-bottom:8px; background:#fff; }
+    .toolbar-row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:space-between; margin-bottom:12px; }
+    .filters-row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+    .filters-row select { width:auto; min-width:120px; }
 
     @media (max-width: 1000px) {
       .main-grid { grid-template-columns: 1fr; }
@@ -217,10 +253,11 @@ ADMIN_HTML = r"""<!doctype html>
     <header>
       <div class="brand">
         <h1>Mobile Agent Control</h1>
-        <p id="streamStateHeader">Supervisor Monitoring</p>
+        <p id="streamStateHeader">Operator dashboard for terminal-native coding agents</p>
       </div>
       <div style="display:flex; gap:8px">
         <button class="secondary" id="toggleConfigBtn">Settings</button>
+        <button class="secondary" id="runningFocusBtn">Running Now</button>
         <button id="refreshAllBtn">Refresh</button>
       </div>
     </header>
@@ -244,9 +281,9 @@ ADMIN_HTML = r"""<!doctype html>
     <div id="machineKpis" class="dashboard-grid"></div>
 
     <div class="main-grid">
-      <div class="stack">
+      <div class="surface-stack">
         <section class="surface">
-          <div class="section-header"><h2>Launch Agent</h2></div>
+          <div class="section-header"><div><h2>Quick Actions</h2><div class="section-subtitle">Launch new work fast and keep the last-used launch close at hand.</div></div></div>
           <div class="section-body">
             <div class="input-row">
               <div class="input-group">
@@ -276,20 +313,60 @@ ADMIN_HTML = r"""<!doctype html>
               <label>Initial Prompt</label>
               <textarea id="initialPrompt" rows="2" placeholder="Task for the agent..."></textarea>
             </div>
-            <button style="width:100%" id="launchAgentBtn">Launch Agent</button>
+            <div class="actions-row">
+              <button style="flex:1" id="launchAgentBtn">Launch Agent</button>
+              <button class="secondary" id="retryLaunchBtn">Retry Last Launch</button>
+              <button class="secondary" id="recentFailuresBtn">Recent Failures</button>
+            </div>
           </div>
         </section>
 
         <section class="surface">
           <div class="section-header">
-            <h2>Active Agents</h2>
+            <div>
+              <h2>Running Now</h2>
+              <div class="section-subtitle">Active, warning, stuck, and failed agents sorted for operator attention.</div>
+            </div>
             <button class="secondary" style="padding:4px 8px; font-size:11px" id="clearTerminatedBtn">Clear Terminated</button>
           </div>
-          <div class="section-body scroll" id="runningAgentsList"></div>
+          <div class="section-body">
+            <div class="toolbar-row">
+              <div class="filters-row">
+                <select id="statusFilter">
+                  <option value="all">All</option>
+                  <option value="running">Running</option>
+                  <option value="warning">Warning</option>
+                  <option value="stuck">Stuck</option>
+                  <option value="failed">Failed</option>
+                </select>
+                <select id="runtimeFilter">
+                  <option value="all">All runtimes</option>
+                </select>
+                <select id="sortMode">
+                  <option value="urgent">Most urgent</option>
+                  <option value="recent">Most recent</option>
+                  <option value="longest">Longest running</option>
+                  <option value="machine">Machine name</option>
+                </select>
+              </div>
+              <span id="staleDataBadge" class="chip status-info">Fresh</span>
+            </div>
+            <div class="scroll" id="runningAgentsList"></div>
+          </div>
         </section>
       </div>
 
-      <div class="stack">
+      <div class="surface-stack">
+        <section class="surface">
+          <div class="section-header">
+            <div>
+              <h2>Machine Health</h2>
+              <div class="section-subtitle">Heartbeat, capacity, and machine-level warnings.</div>
+            </div>
+          </div>
+          <div class="section-body" id="machineHealthList"></div>
+        </section>
+
         <section class="surface">
           <div class="section-header">
             <div id="selectedAgentTitle"><h2>No Agent Selected</h2></div>
@@ -320,6 +397,18 @@ ADMIN_HTML = r"""<!doctype html>
         </section>
 
         <section class="surface">
+          <div class="section-header">
+            <div>
+              <h2>Recent Activity</h2>
+              <div class="section-subtitle">Launches, completions, failures, restarts, stop requests, and machine transitions.</div>
+            </div>
+          </div>
+          <div class="section-body">
+            <div id="recentActivityList" class="scroll"></div>
+          </div>
+        </section>
+
+        <section class="surface">
           <div class="tabs" id="bottomTabs">
             <div class="tab active" data-tab="tasks">Tasks</div>
             <div class="tab" data-tab="audit">Audit</div>
@@ -345,10 +434,11 @@ ADMIN_HTML = r"""<!doctype html>
     (function() {
       const state = {
         machineSelf: null, machineHealth: null,
-        agents: [], running: [], tasks: [], audit: [],
+        agents: [], running: [], overviews: [], tasks: [], audit: [],
         profiles: [], workspaces: [], runtimeAdapters: [],
         slashCommands: [], mcpServers: [],
-        selectedAgentId: null, ws: null, reconnectTimer: null
+        selectedAgentId: null, ws: null, reconnectTimer: null,
+        lastRefreshAt: 0, eventFeed: [], lastLaunchPayload: null
       };
 
       function el(id) { return document.getElementById(id); }
@@ -466,15 +556,82 @@ ADMIN_HTML = r"""<!doctype html>
         if (minutes > 0) return minutes + "m " + remainder + "s";
         return remainder + "s";
       }
+
+      function relativeTime(value) {
+        if (!value) return "-";
+        const delta = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000));
+        if (delta < 60) return delta + "s ago";
+        if (delta < 3600) return Math.floor(delta / 60) + "m ago";
+        if (delta < 86400) return Math.floor(delta / 3600) + "h ago";
+        return Math.floor(delta / 86400) + "d ago";
+      }
+
+      function truncate(value, limit) {
+        const text = String(value || "");
+        return text.length <= limit ? text : text.slice(0, limit - 1) + "…";
+      }
       
       function latestTaskForAgent(agentId) {
         return state.tasks.find(function(task) { return task.agent_id === agentId; }) || null;
+      }
+
+      function latestOverviewForAgent(agentId) {
+        return state.overviews.find(function(record) { return record.agent && record.agent.id === agentId; }) || null;
+      }
+
+      function overviewPriority(item) {
+        const monitor = String(item.status && item.status.monitor_state || "").toLowerCase();
+        const stateValue = String(item.agent && item.agent.state || "").toLowerCase();
+        if (monitor === "stuck") return 0;
+        if (stateValue === "failed") return 1;
+        if (monitor === "warning") return 2;
+        if (stateValue === "running") return 3;
+        if (stateValue === "starting") return 4;
+        if (stateValue === "pending") return 5;
+        if (stateValue === "idle") return 6;
+        return 7;
+      }
+
+      function latestSnippet(record) {
+        if (!record) return "";
+        const logs = record.status && record.status.recent_logs ? record.status.recent_logs : [];
+        if (logs.length) return logs[logs.length - 1].message;
+        if (record.latest_completed_job && record.latest_completed_job.summary) return record.latest_completed_job.summary;
+        if (record.current_job && record.current_job.input_text) return record.current_job.input_text;
+        return "";
+      }
+
+      function primaryIssue(record) {
+        if (!record) return "";
+        if (record.status && record.status.warning_message) return record.status.warning_message;
+        if (record.latest_completed_job && record.latest_completed_job.error) return record.latest_completed_job.error;
+        return "";
       }
       
       function mergeById(list, item) {
         const index = list.findIndex(function(entry) { return entry.id === item.id; });
         if (index >= 0) list[index] = item;
         else list.unshift(item);
+      }
+
+      function mergeOverviewFromEvent(ev) {
+        if (!ev.agent && !ev.agent_status && !ev.job) return;
+        const agentId = ev.agent ? ev.agent.id : (ev.agent_status ? ev.agent_status.agent_id : (ev.job ? ev.job.agent_id : null));
+        if (!agentId) return;
+        const index = state.overviews.findIndex(function(entry) { return entry.agent && entry.agent.id === agentId; });
+        const existing = index >= 0 ? state.overviews[index] : null;
+        const merged = {
+          agent: ev.agent || (existing ? existing.agent : null),
+          status: ev.agent_status || (existing ? existing.status : null),
+          current_job: ev.job && ev.job.agent_id === agentId && ["queued", "running"].indexOf(String(ev.job.state || "").toLowerCase()) >= 0 ? ev.job : (existing ? existing.current_job : null),
+          latest_completed_job: existing ? existing.latest_completed_job : null
+        };
+        if (ev.job && ["completed", "failed", "cancelled"].indexOf(String(ev.job.state || "").toLowerCase()) >= 0) {
+          merged.latest_completed_job = ev.job;
+          merged.current_job = null;
+        }
+        if (index >= 0) state.overviews[index] = merged;
+        else state.overviews.unshift(merged);
       }
       
       function renderMachine() {
@@ -486,11 +643,24 @@ ADMIN_HTML = r"""<!doctype html>
         }
         const machine = self.machine;
         const heartbeat = health ? health.last_heartbeat : machine.updated_at;
+        const warningCount = state.overviews.filter(function(item) { return String(item.status && item.status.monitor_state || "").toLowerCase() === "warning"; }).length;
+        const stuckCount = state.overviews.filter(function(item) { return String(item.status && item.status.monitor_state || "").toLowerCase() === "stuck"; }).length;
+        const failedCount = state.overviews.filter(function(item) { return String(item.agent && item.agent.state || "").toLowerCase() === "failed"; }).length;
+        const queuedCount = state.tasks.filter(function(task) { return String(task.state || "").toLowerCase() === "queued"; }).length;
+        const recentCompletions = state.tasks.filter(function(task) {
+          const stamp = task.completed_at || task.updated_at || task.created_at;
+          return String(task.state || "").toLowerCase() === "completed" && stamp && (Date.now() - new Date(stamp).getTime()) <= 3600000;
+        }).length;
         el("machineKpis").innerHTML = [
-          "<div class='kpi'><div class='kpi-label'>Machine</div><div class='kpi-value'>" + escapeHtml(machine.name) + "</div><div class='kpi-meta mono'>" + escapeHtml(machine.id) + "</div></div>",
-          "<div class='kpi'><div class='kpi-label'>Status</div><div class='kpi-value'><span class='" + statusClass(health ? health.monitor_state : machine.status) + "'>" + escapeHtml(health ? health.monitor_state : machine.status) + "</span></div><div class='kpi-meta'>Heartbeat " + escapeHtml(heartbeat || "-") + "</div></div>",
-          "<div class='kpi'><div class='kpi-label'>Workers</div><div class='kpi-value'>" + machine.worker_pool.busy_workers + "/" + machine.worker_pool.desired_workers + "</div><div class='kpi-meta'>Queue " + machine.worker_pool.queue_depth + "</div></div>",
-          "<div class='kpi'><div class='kpi-label'>Active Agents</div><div class='kpi-value'>" + self.active_agents + "</div><div class='kpi-meta'>of " + self.max_active_agents + " max</div></div>"
+          "<div class='kpi'><div class='kpi-label'>Connected Machines</div><div class='kpi-value'>1</div><div class='kpi-meta mono'>" + escapeHtml(machine.name) + "</div></div>",
+          "<div class='kpi'><div class='kpi-label'>Online Machines</div><div class='kpi-value'>" + (health && health.online ? "1" : "0") + "</div><div class='kpi-meta'>Heartbeat " + escapeHtml(relativeTime(heartbeat)) + "</div></div>",
+          "<div class='kpi'><div class='kpi-label'>Offline Machines</div><div class='kpi-value'>" + (health && health.online ? "0" : "1") + "</div><div class='kpi-meta'>Current supervisor state</div></div>",
+          "<div class='kpi'><div class='kpi-label'>Running Agents</div><div class='kpi-value'>" + self.active_agents + "</div><div class='kpi-meta'>of " + self.max_active_agents + " max</div></div>",
+          "<div class='kpi'><div class='kpi-label'>Warnings</div><div class='kpi-value'>" + warningCount + "</div><div class='kpi-meta'>Agents needing review</div></div>",
+          "<div class='kpi'><div class='kpi-label'>Stuck</div><div class='kpi-value'>" + stuckCount + "</div><div class='kpi-meta'>Intervention required</div></div>",
+          "<div class='kpi'><div class='kpi-label'>Failed</div><div class='kpi-value'>" + failedCount + "</div><div class='kpi-meta'>Recent failed agents</div></div>",
+          "<div class='kpi'><div class='kpi-label'>Queued Tasks</div><div class='kpi-value'>" + queuedCount + "</div><div class='kpi-meta'>Waiting for capacity</div></div>",
+          "<div class='kpi'><div class='kpi-label'>Completed Last Hour</div><div class='kpi-value'>" + recentCompletions + "</div><div class='kpi-meta'>Recent successful runs</div></div>"
         ].join("");
       }
       
@@ -516,6 +686,19 @@ ADMIN_HTML = r"""<!doctype html>
         el("workspace").innerHTML = state.workspaces.map(function(workspace) {
           return "<option value='" + escapeHtml(workspace.path) + "'>" + escapeHtml(workspace.label) + "</option>";
         }).join("");
+      }
+
+      function renderRuntimeFilter() {
+        const seen = {};
+        const options = ["<option value='all'>All runtimes</option>"];
+        state.overviews.forEach(function(record) {
+          const type = record.agent && record.agent.type;
+          if (type && !seen[type]) {
+            seen[type] = true;
+            options.push("<option value='" + escapeHtml(type) + "'>" + escapeHtml(String(type).toUpperCase()) + "</option>");
+          }
+        });
+        el("runtimeFilter").innerHTML = options.join("");
       }
       
       function renderRuntimeAdapters() {
@@ -563,13 +746,51 @@ ADMIN_HTML = r"""<!doctype html>
       
       function renderRunningAgents() {
         const node = el("runningAgentsList");
-        if (!state.running.length) { node.innerHTML = "<div class='empty'>No active agents.</div>"; return; }
-        node.innerHTML = state.running.map(function(agent) {
-          const selected = state.selectedAgentId === agent.agent_id ? " selected" : "";
+        const filter = el("statusFilter").value || "all";
+        const runtime = el("runtimeFilter").value || "all";
+        const sortMode = el("sortMode").value || "urgent";
+        const stale = state.lastRefreshAt && (Date.now() - state.lastRefreshAt) > 90000;
+        el("staleDataBadge").className = stale ? "chip status-stale" : statusClass(state.streamState || "info");
+        el("staleDataBadge").textContent = stale ? "Stale Data" : state.streamState;
+        const list = state.overviews.slice().filter(function(record) {
+          const stateValue = String(record.agent && record.agent.state || "").toLowerCase();
+          const monitor = String(record.status && record.status.monitor_state || "").toLowerCase();
+          if (filter === "running" && ["running", "starting", "pending"].indexOf(stateValue) < 0) return false;
+          if (filter === "warning" && monitor !== "warning") return false;
+          if (filter === "stuck" && monitor !== "stuck") return false;
+          if (filter === "failed" && stateValue !== "failed") return false;
+          if (runtime !== "all" && String(record.agent && record.agent.type || "") !== runtime) return false;
+          return true;
+        });
+        list.sort(function(a, b) {
+          if (sortMode === "recent") return new Date(b.agent.updated_at).getTime() - new Date(a.agent.updated_at).getTime();
+          if (sortMode === "longest") return Number(b.status && b.status.elapsed_seconds || 0) - Number(a.status && a.status.elapsed_seconds || 0);
+          if (sortMode === "machine") return String(state.machineSelf && state.machineSelf.machine ? state.machineSelf.machine.name : "").localeCompare(String(state.machineSelf && state.machineSelf.machine ? state.machineSelf.machine.name : "")) || String(a.agent.type).localeCompare(String(b.agent.type));
+          return overviewPriority(a) - overviewPriority(b);
+        });
+        if (!list.length) { node.innerHTML = "<div class='empty'>No agents match the current dashboard filters.</div>"; return; }
+        node.innerHTML = list.map(function(record) {
+          const agent = record.agent;
+          const status = record.status || {};
+          const selected = state.selectedAgentId === agent.id ? " selected" : "";
+          const snippet = latestSnippet(record);
+          const issue = primaryIssue(record);
           return [
-            "<div class='agent-card" + selected + "' data-aid='" + escapeHtml(agent.agent_id) + "'>",
-            "<div class='agent-card-header'><span class='agent-name'>" + escapeHtml((agent.type || "").toUpperCase()) + "</span><span class='" + statusClass(agent.monitor_state || agent.state) + "'>" + escapeHtml(agent.monitor_state || agent.state) + "</span></div>",
-            "<div style='font-size:11px; color:var(--muted)'>" + escapeHtml(agent.agent_id.substring(0,8)) + " · PID " + (agent.pid || "-") + " · " + formatDuration(agent.elapsed_seconds) + "</div>",
+            "<div class='agent-card" + selected + "' data-aid='" + escapeHtml(agent.id) + "'>",
+            "<div class='agent-card-header'><span class='agent-name'>" + escapeHtml((agent.type || "").toUpperCase()) + " · " + escapeHtml(agent.id.substring(0,8)) + "</span><span class='" + statusClass(status.monitor_state || agent.state) + "'>" + escapeHtml(status.monitor_state || agent.state) + "</span></div>",
+            "<div style='font-size:11px; color:var(--muted)'>" + escapeHtml((state.machineSelf && state.machineSelf.machine ? state.machineSelf.machine.name : "Machine")) + " · " + formatDuration(status.elapsed_seconds) + "</div>",
+            "<div class='agent-meta'>",
+            "<span class='pill'>Workspace " + escapeHtml(truncate(agent.workspace || "-", 36)) + "</span>",
+            "<span class='pill'>Last output " + escapeHtml(relativeTime(status.last_output_at || status.last_log_timestamp)) + "</span>",
+            "<span class='pill'>Heartbeat " + escapeHtml(relativeTime(status.last_heartbeat)) + "</span>",
+            "</div>",
+            snippet ? "<div class='snippet'>" + escapeHtml(truncate(snippet, 180)) + "</div>" : "",
+            issue ? "<div class='issue'>" + escapeHtml(truncate(issue, 180)) + "</div>" : "",
+            "<div class='actions-row'>",
+            "<button class='secondary open-agent' data-aid='" + escapeHtml(agent.id) + "'>Open</button>",
+            "<button class='secondary restart-agent' data-aid='" + escapeHtml(agent.id) + "'>Restart</button>",
+            "<button class='danger stop-agent' data-aid='" + escapeHtml(agent.id) + "'>Stop</button>",
+            "</div>",
             "</div>"
           ].join("");
         }).join("");
@@ -578,6 +799,15 @@ ADMIN_HTML = r"""<!doctype html>
         for (let i = 0; i < cards.length; i++) {
           cards[i].addEventListener('click', function() { selectAgent(this.dataset.aid); });
         }
+        node.querySelectorAll('.open-agent').forEach(function(button) {
+          button.addEventListener('click', function(event) { event.stopPropagation(); selectAgent(this.dataset.aid); });
+        });
+        node.querySelectorAll('.restart-agent').forEach(function(button) {
+          button.addEventListener('click', function(event) { event.stopPropagation(); state.selectedAgentId = this.dataset.aid; restartAgent(); });
+        });
+        node.querySelectorAll('.stop-agent').forEach(function(button) {
+          button.addEventListener('click', function(event) { event.stopPropagation(); state.selectedAgentId = this.dataset.aid; stopAgent(); });
+        });
       }
       
       function renderTasks() {
@@ -605,9 +835,77 @@ ADMIN_HTML = r"""<!doctype html>
           ].join("");
         }).join("");
       }
+
+      function renderMachineHealth() {
+        const node = el("machineHealthList");
+        const self = state.machineSelf;
+        const health = state.machineHealth;
+        if (!self || !self.machine || !health) {
+          node.innerHTML = "<div class='empty'>Machine health not loaded yet.</div>";
+          return;
+        }
+        const resources = health.resources || {};
+        const warning = !health.online || (health.warning_count || 0) > 0;
+        node.innerHTML = [
+          "<div class='mini-grid'>",
+          "<div class='timeline-item'><strong>" + escapeHtml(self.machine.name) + "</strong><div class='section-subtitle'>" + escapeHtml(self.machine.base_url) + "</div></div>",
+          "<div class='timeline-item'><strong>Status</strong><div style='margin-top:6px'><span class='" + statusClass(health.monitor_state || self.machine.status) + "'>" + escapeHtml(health.monitor_state || self.machine.status) + "</span></div></div>",
+          "<div class='timeline-item'><strong>Last heartbeat</strong><div class='section-subtitle'>" + escapeHtml(relativeTime(health.last_heartbeat)) + "</div></div>",
+          "<div class='timeline-item'><strong>Capacity</strong><div class='section-subtitle'>" + self.machine.worker_pool.busy_workers + "/" + self.machine.worker_pool.desired_workers + " busy</div></div>",
+          typeof resources.cpu_percent === "number" ? "<div class='timeline-item'><strong>CPU</strong><div class='section-subtitle'>" + Math.round(resources.cpu_percent) + "%</div></div>" : "",
+          typeof resources.memory_mb === "number" ? "<div class='timeline-item'><strong>Memory</strong><div class='section-subtitle'>" + Math.round(resources.memory_mb) + " MB</div></div>" : "",
+          "</div>",
+          warning ? "<div class='issue'>" + escapeHtml((health.adapter_warnings || ["Supervisor needs attention"]).join(" • ")) + "</div>" : "<div class='snippet'>Supervisor healthy. Launch and monitoring paths are available.</div>"
+        ].join("");
+      }
+
+      function renderRecentActivity() {
+        const node = el("recentActivityList");
+        const merged = [];
+        state.audit.forEach(function(entry) {
+          merged.push({
+            timestamp: entry.timestamp,
+            title: entry.action,
+            status: entry.status,
+            detail: entry.message
+          });
+        });
+        state.tasks.forEach(function(task) {
+          if (["completed", "failed", "cancelled"].indexOf(String(task.state || "").toLowerCase()) >= 0) {
+            merged.push({
+              timestamp: task.completed_at || task.updated_at || task.created_at,
+              title: "task_" + task.state,
+              status: task.state,
+              detail: task.summary || task.error || task.input_text
+            });
+          }
+        });
+        state.eventFeed.forEach(function(event) {
+          merged.push({
+            timestamp: event.timestamp,
+            title: event.event,
+            status: event.agent_status ? event.agent_status.monitor_state : "info",
+            detail: event.message || (event.log ? event.log.message : "")
+          });
+        });
+        merged.sort(function(a, b) { return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(); });
+        if (!merged.length) { node.innerHTML = "<div class='empty'>No recent activity yet.</div>"; return; }
+        node.innerHTML = merged.slice(0, 16).map(function(item) {
+          return [
+            "<div class='timeline-item'>",
+            "<div style='display:flex; justify-content:space-between; gap:8px; align-items:flex-start'>",
+            "<div><strong>" + escapeHtml(item.title.replace(/_/g, " ")) + "</strong><div class='section-subtitle'>" + escapeHtml(relativeTime(item.timestamp)) + "</div></div>",
+            "<span class='" + statusClass(item.status) + "'>" + escapeHtml(item.status) + "</span>",
+            "</div>",
+            item.detail ? "<div class='snippet'>" + escapeHtml(truncate(item.detail, 180)) + "</div>" : "",
+            "</div>"
+          ].join("");
+        }).join("");
+      }
       
       function renderSelectedAgent() {
         const agent = state.agents.find(function(item) { return item.id === state.selectedAgentId; }) || null;
+        const overview = latestOverviewForAgent(state.selectedAgentId);
         if (!agent) {
           el("selectedAgentTitle").innerHTML = "<h2>No Agent Selected</h2>";
           el("agentActions").style.display = "none";
@@ -621,7 +919,10 @@ ADMIN_HTML = r"""<!doctype html>
         el("selectedAgentMeta").innerHTML = [
           "<div><strong>ID:</strong> " + escapeHtml(agent.id) + "</div>",
           "<div><strong>Workspace:</strong> " + escapeHtml(agent.workspace || "-") + "</div>",
-          "<div><strong>Task:</strong> " + escapeHtml(agent.current_task || "-") + "</div>"
+          "<div><strong>Task:</strong> " + escapeHtml(agent.current_task || "-") + "</div>",
+          overview ? "<div><strong>Last heartbeat:</strong> " + escapeHtml(relativeTime(overview.status.last_heartbeat)) + "</div>" : "",
+          overview ? "<div><strong>Last output:</strong> " + escapeHtml(relativeTime(overview.status.last_output_at || overview.status.last_log_timestamp)) + "</div>" : "",
+          overview && primaryIssue(overview) ? "<div class='issue'>" + escapeHtml(primaryIssue(overview)) + "</div>" : ""
         ].join("");
         
         el("logView").textContent = recentLogs.length ? recentLogs.map(function(log) {
@@ -631,7 +932,8 @@ ADMIN_HTML = r"""<!doctype html>
         }).join("\n") : "No logs available.";
         
         const task = latestTaskForAgent(agent.id);
-        el("latestResult").innerHTML = task ? "<strong>Last Result:</strong><br>" + escapeHtml(task.summary || task.error || "No summary yet.") : "";
+        const taskResult = overview && overview.latest_completed_job ? overview.latest_completed_job : task;
+        el("latestResult").innerHTML = taskResult ? "<strong>Last Result:</strong><br>" + escapeHtml(taskResult.summary || taskResult.error || "No summary yet.") : "";
       }
       
       function selectAgent(agentId) {
@@ -662,18 +964,20 @@ ADMIN_HTML = r"""<!doctype html>
       async function refreshAll() {
         try {
           const results = await Promise.all([
-            api("/machines/self"), api("/agents"), api("/agents/running"),
+            api("/machines/self"), api("/agents"), api("/agents/running"), api("/agents/overview"),
             api("/tasks?limit=30"), api("/audit?limit=30"),
             api("/launch-profiles"), api("/workspaces"), api("/runtime/adapters")
           ]);
           state.machineSelf = results[0]; 
           state.agents = results[1].agents || [];
-          state.running = results[2].agents || []; 
-          state.tasks = results[3].tasks || [];
-          state.audit = results[4].entries || []; 
-          state.profiles = results[5].profiles || [];
-          state.workspaces = results[6].workspaces || []; 
-          state.runtimeAdapters = results[7].adapters || [];
+          state.running = results[2].agents || [];
+          state.overviews = results[3].agents || [];
+          state.tasks = results[4].tasks || [];
+          state.audit = results[5].entries || []; 
+          state.profiles = results[6].profiles || [];
+          state.workspaces = results[7].workspaces || []; 
+          state.runtimeAdapters = results[8].adapters || [];
+          state.lastRefreshAt = Date.now();
           
           if (state.machineSelf && state.machineSelf.machine) {
             const mid = state.machineSelf.machine.id;
@@ -683,7 +987,10 @@ ADMIN_HTML = r"""<!doctype html>
           renderMachine(); 
           renderProfiles(); 
           renderWorkspaces();
-          if (!state.selectedAgentId && state.running.length) state.selectedAgentId = state.running[0].agent_id;
+          renderRuntimeFilter();
+          renderMachineHealth();
+          renderRecentActivity();
+          if (!state.selectedAgentId && state.overviews.length) state.selectedAgentId = state.overviews[0].agent.id;
           renderRunningAgents(); 
           renderTasks(); 
           renderAudit();
@@ -698,21 +1005,38 @@ ADMIN_HTML = r"""<!doctype html>
       
       async function launchAgent() {
         try {
+          state.lastLaunchPayload = {
+            type: el("launchType").value, 
+            launch_profile: el("launchProfile").value,
+            workspace: selectedWorkspace(), 
+            initial_prompt: el("initialPrompt").value,
+            runtime_model: el("runtimeModel").value, 
+            command_name: el("slashCommand").value
+          };
           const res = await api("/agents/launch", {
             method: "POST",
-            body: JSON.stringify({
-              type: el("launchType").value, 
-              launch_profile: el("launchProfile").value,
-              workspace: selectedWorkspace(), 
-              initial_prompt: el("initialPrompt").value,
-              runtime_model: el("runtimeModel").value, 
-              command_name: el("slashCommand").value
-            })
+            body: JSON.stringify(state.lastLaunchPayload)
           });
           state.selectedAgentId = res.agent.id; 
           flash("Agent launched.", "ok");
           await refreshAll();
         } catch (e) { flash("Launch failed: " + e.message, "bad"); }
+      }
+
+      async function retryLaunch() {
+        if (!state.lastLaunchPayload) {
+          flash("No previous launch to retry.", "bad");
+          return;
+        }
+        try {
+          const res = await api("/agents/launch", {
+            method: "POST",
+            body: JSON.stringify(state.lastLaunchPayload)
+          });
+          state.selectedAgentId = res.agent.id;
+          flash("Launch retried.", "ok");
+          await refreshAll();
+        } catch (e) { flash("Retry failed: " + e.message, "bad"); }
       }
       
       async function sendPrompt() {
@@ -763,16 +1087,18 @@ ADMIN_HTML = r"""<!doctype html>
       function connectWs() {
         const config = getConfig();
         if (!config.baseUrl || !config.token) return;
+        if (state.ws && (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING)) return;
         let protocol = "ws://";
         if (config.baseUrl.indexOf("https://") === 0) protocol = "wss://";
         const urlParts = config.baseUrl.split("://");
         const wsBase = urlParts[1] || urlParts[0];
-        if (state.ws) { state.ws.onclose = null; state.ws.close(); }
         const ws = new WebSocket(protocol + wsBase + "/ws?token=" + encodeURIComponent(config.token));
         state.ws = ws;
-        ws.onopen = function() { updateStreamState("Live"); };
+        ws.onopen = function() { updateStreamState("Live"); state.lastRefreshAt = Date.now(); };
         ws.onmessage = function(msg) {
           const ev = JSON.parse(msg.data);
+          state.eventFeed.unshift(ev);
+          state.eventFeed = state.eventFeed.slice(0, 20);
           if (ev.machine) state.machineSelf.machine = ev.machine;
           if (ev.machine_health) state.machineHealth = ev.machine_health;
           if (ev.agent) mergeById(state.agents, ev.agent);
@@ -781,9 +1107,18 @@ ADMIN_HTML = r"""<!doctype html>
             if (index >= 0) state.running[index] = ev.agent_status;
             else state.running.unshift(ev.agent_status);
           }
+          mergeOverviewFromEvent(ev);
           if (ev.job) mergeById(state.tasks, ev.job);
           if (ev.audit) mergeById(state.audit, ev.audit);
-          renderMachine(); renderRunningAgents(); renderTasks(); renderAudit(); renderSelectedAgent();
+          state.lastRefreshAt = Date.now();
+          renderMachine();
+          renderRuntimeFilter();
+          renderMachineHealth();
+          renderRecentActivity();
+          renderRunningAgents();
+          renderTasks();
+          renderAudit();
+          renderSelectedAgent();
         };
         ws.onclose = function() { updateStreamState("Disconnected"); setTimeout(connectWs, 2000); };
       }
@@ -793,6 +1128,14 @@ ADMIN_HTML = r"""<!doctype html>
         el("launchProfile").addEventListener("change", function() { refreshLaunchContext(); });
         el("workspace").addEventListener("change", function() { refreshLaunchContext(); });
         el("launchAgentBtn").addEventListener("click", launchAgent);
+        el("retryLaunchBtn").addEventListener("click", retryLaunch);
+        el("recentFailuresBtn").addEventListener("click", function() {
+          el("statusFilter").value = "failed";
+          renderRunningAgents();
+        });
+        el("runningFocusBtn").addEventListener("click", function() {
+          document.getElementById("runningAgentsList").scrollIntoView({ behavior: "smooth", block: "start" });
+        });
         el("sendPromptBtn").addEventListener("click", sendPrompt);
         el("stopAgentBtn").addEventListener("click", stopAgent);
         el("restartAgentBtn").addEventListener("click", restartAgent);
@@ -802,6 +1145,9 @@ ADMIN_HTML = r"""<!doctype html>
         el("saveConfigBtn").addEventListener("click", saveConfig);
         el("resetConfigBtn").addEventListener("click", function() { loadConfig(); flash("Reset to defaults", "ok"); });
         el("refreshAllBtn").addEventListener("click", refreshAll);
+        el("statusFilter").addEventListener("change", renderRunningAgents);
+        el("runtimeFilter").addEventListener("change", renderRunningAgents);
+        el("sortMode").addEventListener("change", renderRunningAgents);
         
         const agentTabs = el('agentTabs').querySelectorAll('.tab');
         for (let i = 0; i < agentTabs.length; i++) {

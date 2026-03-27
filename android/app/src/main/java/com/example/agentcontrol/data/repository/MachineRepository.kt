@@ -5,6 +5,8 @@ import com.example.agentcontrol.data.model.AgentDetailResponse
 import com.example.agentcontrol.data.model.AgentEventsResponse
 import com.example.agentcontrol.data.model.AgentListResponse
 import com.example.agentcontrol.data.model.AgentMetricsResponse
+import com.example.agentcontrol.data.model.AgentOverviewListResponse
+import com.example.agentcontrol.data.model.DashboardAgentCard
 import com.example.agentcontrol.data.model.AuditLogResponse
 import com.example.agentcontrol.data.model.DashboardActivityItem
 import com.example.agentcontrol.data.model.HealthResponse
@@ -104,6 +106,11 @@ class MachineRepository(
     suspend fun runningAgents(machineId: String): RunningAgentsResponse = withContext(ioDispatcher) {
         val machine = requireMachine(machineId)
         ApiClientFactory.create(machine.baseUrl) { machine.token }.first.runningAgents()
+    }
+
+    suspend fun agentOverviews(machineId: String, limit: Int = 100): AgentOverviewListResponse = withContext(ioDispatcher) {
+        val machine = requireMachine(machineId)
+        ApiClientFactory.create(machine.baseUrl) { machine.token }.first.agentOverviews(limit)
     }
 
     suspend fun startAgent(machineId: String, request: StartAgentRequest): AgentDetailResponse = withContext(ioDispatcher) {
@@ -288,6 +295,23 @@ class MachineRepository(
                 auditItems + taskItems
             }.getOrElse { emptyList() }
         }.sortedByDescending { it.timestamp }.take(limit)
+    }
+
+    suspend fun loadDashboardAgentCardsAcrossMachines(limitPerMachine: Int = 100): List<DashboardAgentCard> = withContext(ioDispatcher) {
+        machineStore.machines.value.flatMap { machine ->
+            runCatching {
+                val (api, _) = ApiClientFactory.create(machine.baseUrl) { machine.token }
+                val self = api.machineSelf()
+                val machineHealth = api.machineHealth(self.machine.id)
+                api.agentOverviews(limitPerMachine).agents.map { overview ->
+                    DashboardAgentCard(
+                        machine = machine,
+                        machineHealth = machineHealth,
+                        overview = overview,
+                    )
+                }
+            }.getOrElse { emptyList() }
+        }
     }
 
     fun observeEvents(machineId: String): Flow<SupervisorEvent> = callbackFlow {

@@ -260,6 +260,17 @@ class AgentDetailResponse(BaseModel):
     latest_diagnosis: DiagnosisResponse | None = None
 
 
+class AgentOverviewRecord(BaseModel):
+    agent: AgentRecord
+    status: "AgentRuntimeStatus"
+    current_job: JobRecord | None = None
+    latest_completed_job: JobRecord | None = None
+
+
+class AgentOverviewListResponse(BaseModel):
+    agents: list[AgentOverviewRecord]
+
+
 class StartAgentRequest(BaseModel):
     type: AgentType
     initial_task: str | None = None

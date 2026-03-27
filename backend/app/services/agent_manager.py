@@ -25,6 +25,8 @@ from app.models import (
     AgentEventsResponse,
     AgentListResponse,
     AgentMetricsResponse,
+    AgentOverviewListResponse,
+    AgentOverviewRecord,
     AgentRecord,
     AgentRuntimeStatus,
     AgentState,
@@ -179,6 +181,35 @@ class AgentManager:
             if agent.state in active_states
         ]
         return RunningAgentsResponse(agents=sorted(statuses, key=lambda item: (item.monitor_state, -item.elapsed_seconds)))
+
+    async def agent_overviews(self, limit: int = 100) -> AgentOverviewListResponse:
+        await self._refresh_machine()
+        records = []
+        for agent in self._agents.values():
+            self._sanitize_agent_runtime_metadata(agent)
+            current_job = self._jobs.get(agent.current_job_id) if agent.current_job_id else None
+            recent_jobs = self._recent_jobs_for_agent(agent.id)
+            latest_completed_job = next(
+                (job for job in recent_jobs if job.state in {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}),
+                None,
+            )
+            records.append(
+                AgentOverviewRecord(
+                    agent=agent,
+                    status=self._agent_runtime_status(agent),
+                    current_job=current_job,
+                    latest_completed_job=latest_completed_job,
+                )
+            )
+        records.sort(
+            key=lambda item: (
+                self._overview_priority(item),
+                -(item.status.elapsed_seconds or 0),
+                item.agent.updated_at,
+            ),
+            reverse=False,
+        )
+        return AgentOverviewListResponse(agents=records[:limit])
 
     async def get_agent(self, agent_id: str) -> AgentDetailResponse:
         agent = self._require_agent(agent_id)
@@ -1572,6 +1603,28 @@ class AgentManager:
 
     def _executor_for(self, agent: AgentRecord):
         return self.runtime_executor if agent.launch_profile else self.mock_executor
+
+    @staticmethod
+    def _overview_priority(item: AgentOverviewRecord) -> int:
+        monitor = item.status.monitor_state.lower()
+        state = item.agent.state.value.lower()
+        if monitor == "stuck":
+            return 0
+        if monitor == "warning":
+            return 1
+        if state == "failed":
+            return 2
+        if state == "running":
+            return 3
+        if state == "starting":
+            return 4
+        if state == "pending":
+            return 5
+        if state == "idle":
+            return 6
+        if state == "stopping":
+            return 7
+        return 8
 
     def _require_agent(self, agent_id: str) -> AgentRecord:
         agent = self._agents.get(agent_id)

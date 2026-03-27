@@ -4,6 +4,7 @@ import com.example.agentcontrol.data.model.AgentDetailResponse
 import com.example.agentcontrol.data.model.AgentEventsResponse
 import com.example.agentcontrol.data.model.AgentListResponse
 import com.example.agentcontrol.data.model.AgentMetricsResponse
+import com.example.agentcontrol.data.model.AgentOverviewListResponse
 import com.example.agentcontrol.data.model.AuditLogResponse
 import com.example.agentcontrol.data.model.HealthResponse
 import com.example.agentcontrol.data.model.LaunchAgentRequest
@@ -55,6 +56,9 @@ interface MachineApi {
 
     @GET("agents/running")
     suspend fun runningAgents(): RunningAgentsResponse
+
+    @GET("agents/overview")
+    suspend fun agentOverviews(@Query("limit") limit: Int = 100): AgentOverviewListResponse
 
     @GET("agents/{id}")
     suspend fun getAgent(@Path("id") id: String): AgentDetailResponse

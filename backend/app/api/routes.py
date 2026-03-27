@@ -10,6 +10,7 @@ from app.models import (
     AgentEventsResponse,
     AgentListResponse,
     AgentMetricsResponse,
+    AgentOverviewListResponse,
     AuditLogResponse,
     DiagnosisResponse,
     HealthResponse,
@@ -97,6 +98,15 @@ async def running_agents(
     _: str = Depends(get_current_token),
 ) -> RunningAgentsResponse:
     return await manager.running_agents()
+
+
+@router.get("/agents/overview", response_model=AgentOverviewListResponse)
+async def agent_overviews(
+    limit: int = Query(default=100, ge=1, le=500),
+    manager: AgentManager = Depends(get_agent_manager),
+    _: str = Depends(get_current_token),
+) -> AgentOverviewListResponse:
+    return await manager.agent_overviews(limit)
 
 
 @router.get("/agents/{agent_id}", response_model=AgentDetailResponse)

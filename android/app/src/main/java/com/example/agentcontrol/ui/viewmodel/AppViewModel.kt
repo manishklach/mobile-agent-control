@@ -4,10 +4,15 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.agentcontrol.data.model.AgentDetailResponse
+import com.example.agentcontrol.data.model.AgentOverviewRecord
 import com.example.agentcontrol.data.model.AgentRecord
 import com.example.agentcontrol.data.model.AgentRuntimeStatus
 import com.example.agentcontrol.data.model.AuditEntry
+import com.example.agentcontrol.data.model.DashboardAgentCard
 import com.example.agentcontrol.data.model.DashboardActivityItem
+import com.example.agentcontrol.data.model.DashboardMachineHealthCard
+import com.example.agentcontrol.data.model.DashboardSnapshot
+import com.example.agentcontrol.data.model.DashboardSummary
 import com.example.agentcontrol.data.model.JobRecord
 import com.example.agentcontrol.data.model.LaunchAgentRequest
 import com.example.agentcontrol.data.model.LaunchSupport
@@ -29,6 +34,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.temporal.ChronoUnit
 
 data class AppUiState(
     val machines: UiState<List<MachineOverview>> = UiState.Loading,
@@ -42,6 +49,7 @@ data class AppUiState(
     val workspaces: UiState<List<WorkspaceRecord>> = UiState.Loading,
     val runningAgents: UiState<List<RunningAgentOverview>> = UiState.Loading,
     val dashboardActivity: UiState<List<DashboardActivityItem>> = UiState.Loading,
+    val dashboardSnapshot: UiState<DashboardSnapshot> = UiState.Loading,
     val selectedAgentMetrics: UiState<AgentRuntimeStatus> = UiState.Loading,
     val selectedAgentEvents: UiState<List<SupervisorEvent>> = UiState.Loading,
     val liveEvents: List<SupervisorEvent> = emptyList(),
@@ -51,6 +59,8 @@ data class AppUiState(
     val actionMessage: String? = null,
     val launchedAgentId: String? = null,
     val launchedAgentMachineId: String? = null,
+    val lastLaunchRequest: LaunchAgentRequest? = null,
+    val lastLaunchMachineId: String? = null,
     val streamStatus: String = "Disconnected"
 )
 
@@ -59,6 +69,7 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
     val uiState: StateFlow<AppUiState> = _uiState.asStateFlow()
 
     private var machineEventsJob: Job? = null
+    private var machineTransitions: List<DashboardActivityItem> = emptyList()
 
     fun loadMachines() {
         viewModelScope.launch {
@@ -75,8 +86,10 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
             _uiState.update {
                 it.copy(machines = if (results.isEmpty()) UiState.Error("No machines configured") else UiState.Success(results))
             }
+            recordMachineTransitions(previous.values.toList(), results)
             loadRunningAgents()
             loadDashboardActivity()
+            rebuildDashboardSnapshot()
         }
     }
 
@@ -164,6 +177,7 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
             runCatching { repository.loadRunningAgentsAcrossMachines() }
                 .onSuccess { agents ->
                     _uiState.update { it.copy(runningAgents = UiState.Success(agents)) }
+                    rebuildDashboardSnapshot()
                 }
                 .onFailure { error ->
                     _uiState.update { it.copy(runningAgents = UiState.Error(repository.userMessage(error))) }
@@ -175,7 +189,11 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
         viewModelScope.launch {
             _uiState.update { it.copy(dashboardActivity = UiState.Loading) }
             runCatching { repository.loadDashboardActivityAcrossMachines() }
-                .onSuccess { items -> _uiState.update { it.copy(dashboardActivity = UiState.Success(items)) } }
+                .onSuccess { items ->
+                    val merged = (machineTransitions + items).sortedByDescending { it.timestamp }.take(50)
+                    _uiState.update { it.copy(dashboardActivity = UiState.Success(merged)) }
+                    rebuildDashboardSnapshot()
+                }
                 .onFailure { error -> _uiState.update { it.copy(dashboardActivity = UiState.Error(repository.userMessage(error))) } }
         }
     }
@@ -291,12 +309,22 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
                         actionError = null,
                         actionMessage = if (response.agent.state.equals("pending", ignoreCase = true)) "Launch queued" else "Agent launched",
                         launchedAgentId = response.agent.id,
-                        launchedAgentMachineId = machineId
+                        launchedAgentMachineId = machineId,
+                        lastLaunchRequest = LaunchAgentRequest(
+                            type = type,
+                            launchProfile = launchProfile,
+                            workspace = workspace,
+                            initialPrompt = initialPrompt?.takeIf { it.isNotBlank() },
+                            runtimeModel = runtimeModel?.takeIf { it.isNotBlank() },
+                            commandName = commandName?.takeIf { it.isNotBlank() }
+                        ),
+                        lastLaunchMachineId = machineId
                     )
                 }
                 refreshMachine(machineId)
                 loadRunningAgents()
                 loadDashboardActivity()
+                rebuildDashboardSnapshot()
             }.onFailure { error ->
                 _uiState.update { it.copy(actionError = repository.userMessage(error), actionMessage = null) }
             }
@@ -335,13 +363,23 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
                         actionError = null,
                         actionMessage = "Launched on ${result.machine.name}",
                         launchedAgentId = result.agent.agent.id,
-                        launchedAgentMachineId = result.machine.id
+                        launchedAgentMachineId = result.machine.id,
+                        lastLaunchRequest = LaunchAgentRequest(
+                            type = type,
+                            launchProfile = launchProfile,
+                            workspace = workspace,
+                            initialPrompt = initialPrompt?.takeIf { it.isNotBlank() },
+                            runtimeModel = runtimeModel?.takeIf { it.isNotBlank() },
+                            commandName = commandName?.takeIf { it.isNotBlank() }
+                        ),
+                        lastLaunchMachineId = result.machine.id
                     )
                 }
                 refreshMachine(result.machine.id)
                 loadMachines()
                 loadRunningAgents()
                 loadDashboardActivity()
+                rebuildDashboardSnapshot()
             }.onFailure { error ->
                 _uiState.update { it.copy(actionError = repository.userMessage(error), actionMessage = null) }
             }
@@ -369,8 +407,38 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
                     loadMachines()
                     loadRunningAgents()
                     loadDashboardActivity()
+                    rebuildDashboardSnapshot()
                 }
                 .onFailure { error -> _uiState.update { it.copy(actionError = repository.userMessage(error), actionMessage = null) } }
+        }
+    }
+
+    fun retryLastLaunch() {
+        val request = _uiState.value.lastLaunchRequest
+        val machineId = _uiState.value.lastLaunchMachineId
+        if (request == null) {
+            _uiState.update { it.copy(actionError = "No previous launch to retry", actionMessage = null) }
+            return
+        }
+        if (machineId.isNullOrBlank()) {
+            launchAgentOnBestMachine(
+                type = request.type,
+                launchProfile = request.launchProfile,
+                workspace = request.workspace,
+                initialPrompt = request.initialPrompt,
+                runtimeModel = request.runtimeModel,
+                commandName = request.commandName
+            )
+        } else {
+            launchAgent(
+                machineId = machineId,
+                type = request.type,
+                launchProfile = request.launchProfile,
+                workspace = request.workspace,
+                initialPrompt = request.initialPrompt,
+                runtimeModel = request.runtimeModel,
+                commandName = request.commandName
+            )
         }
     }
 
@@ -382,6 +450,7 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
                     refreshMachine(machineId)
                     loadRunningAgents()
                     loadDashboardActivity()
+                    rebuildDashboardSnapshot()
                 }
                 .onFailure { error -> _uiState.update { it.copy(actionError = repository.userMessage(error), actionMessage = null) } }
         }
@@ -395,6 +464,7 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
                     refreshMachine(machineId)
                     loadRunningAgents()
                     loadDashboardActivity()
+                    rebuildDashboardSnapshot()
                 }
                 .onFailure { error -> _uiState.update { it.copy(actionError = repository.userMessage(error), actionMessage = null) } }
         }
@@ -408,6 +478,7 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
                     refreshMachine(machineId)
                     loadRunningAgents()
                     loadDashboardActivity()
+                    rebuildDashboardSnapshot()
                 }
                 .onFailure { error -> _uiState.update { it.copy(actionError = repository.userMessage(error), actionMessage = null) } }
         }
@@ -452,6 +523,96 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
         loadAudit(machineId)
         loadRunningAgents()
         loadDashboardActivity()
+        rebuildDashboardSnapshot()
+    }
+
+    private fun recordMachineTransitions(previous: List<MachineOverview>, current: List<MachineOverview>) {
+        val previousMap = previous.associateBy { it.config.id }
+        val transitions = current.mapNotNull { machine ->
+            val before = previousMap[machine.config.id] ?: return@mapNotNull null
+            if (before.isOnline == machine.isOnline) return@mapNotNull null
+            DashboardActivityItem(
+                machineId = machine.config.id,
+                machineName = machine.config.name,
+                timestamp = Instant.now().toString(),
+                category = "machine",
+                status = if (machine.isOnline) "online" else "offline",
+                title = if (machine.isOnline) "Machine Online" else "Machine Offline",
+                detail = machine.error ?: if (machine.isOnline) "Supervisor is reachable again" else "Supervisor did not respond"
+            )
+        }
+        if (transitions.isNotEmpty()) {
+            machineTransitions = (transitions + machineTransitions).sortedByDescending { it.timestamp }.take(20)
+        }
+    }
+
+    private fun rebuildDashboardSnapshot() {
+        viewModelScope.launch(Dispatchers.Default) {
+            val machines = (_uiState.value.machines as? UiState.Success)?.data.orEmpty()
+            if (machines.isEmpty()) {
+                _uiState.update { it.copy(dashboardSnapshot = UiState.Error("No machines configured")) }
+                return@launch
+            }
+            val activity = (_uiState.value.dashboardActivity as? UiState.Success)?.data.orEmpty()
+            val agentCards = runCatching { repository.loadDashboardAgentCardsAcrossMachines() }.getOrElse { emptyList() }
+            val now = Instant.now()
+            val summary = DashboardSummary(
+                connectedMachines = machines.size,
+                onlineMachines = machines.count { it.isOnline },
+                offlineMachines = machines.count { !it.isOnline },
+                runningAgents = agentCards.count { it.overview.agent.state.lowercase() in setOf("running", "starting") },
+                warningAgents = agentCards.count { it.overview.status.monitorState.equals("warning", true) },
+                stuckAgents = agentCards.count { it.overview.status.monitorState.equals("stuck", true) },
+                failedAgents = agentCards.count { it.overview.agent.state.equals("failed", true) },
+                queuedTasks = machines.sumOf { it.machineHealth?.queuedJobs ?: it.health?.queuedJobs ?: 0 },
+                recentCompletionsLastHour = activity.count {
+                    it.title == "Completion" && runCatching {
+                        Instant.parse(it.timestamp).isAfter(now.minus(1, ChronoUnit.HOURS))
+                    }.getOrDefault(false)
+                }
+            )
+            val machineCards = machines.map { machine ->
+                DashboardMachineHealthCard(
+                    machine = machine,
+                    activeAgentCount = agentCards.count {
+                        it.machine.id == machine.config.id &&
+                            it.overview.agent.state.lowercase() in setOf("running", "starting", "idle", "pending", "stopping")
+                    },
+                    unhealthy = !machine.isOnline ||
+                        (machine.machineHealth?.warningCount ?: 0) > 0 ||
+                        (machine.machineHealth?.agentsFailed ?: 0) > 0
+                )
+            }
+            val prioritized = agentCards.sortedWith(
+                compareBy<DashboardAgentCard> { dashboardPriority(it.overview) }
+                    .thenByDescending { it.overview.status.elapsedSeconds }
+                    .thenBy { it.machine.name.lowercase() }
+            )
+            _uiState.update {
+                it.copy(
+                    dashboardSnapshot = UiState.Success(
+                        DashboardSnapshot(
+                            summary = summary,
+                            agents = prioritized,
+                            machines = machineCards,
+                            recentActivity = activity,
+                            lastUpdatedEpochMs = System.currentTimeMillis()
+                        )
+                    )
+                )
+            }
+        }
+    }
+
+    private fun dashboardPriority(overview: AgentOverviewRecord): Int = when {
+        overview.status.monitorState.equals("stuck", true) -> 0
+        overview.agent.state.equals("failed", true) -> 1
+        overview.status.monitorState.equals("warning", true) -> 2
+        overview.agent.state.equals("running", true) -> 3
+        overview.agent.state.equals("starting", true) -> 4
+        overview.agent.state.equals("pending", true) -> 5
+        overview.agent.state.equals("idle", true) -> 6
+        else -> 7
     }
 
     private fun mergeMachineEvent(current: UiState<MachineSelfResponse>, event: SupervisorEvent): UiState<MachineSelfResponse> {

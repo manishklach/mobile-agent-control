@@ -89,6 +89,7 @@ backend/
 - `GET /machines`
 - `GET /machines/{id}/health`
 - `GET /agents`
+- `GET /agents/overview`
 - `GET /agents/running`
 - `GET /agents/{id}`
 - `GET /agents/{id}/events`

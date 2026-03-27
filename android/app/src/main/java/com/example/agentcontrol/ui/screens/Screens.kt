@@ -2,15 +2,19 @@ package com.example.agentcontrol.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
@@ -22,6 +26,8 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -30,6 +36,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -38,11 +45,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.agentcontrol.data.model.DashboardAgentCard
 import com.example.agentcontrol.data.model.AgentDetailResponse
 import com.example.agentcontrol.data.model.AgentRecord
 import com.example.agentcontrol.data.model.AgentRuntimeStatus
 import com.example.agentcontrol.data.model.AuditEntry
 import com.example.agentcontrol.data.model.DashboardActivityItem
+import com.example.agentcontrol.data.model.DashboardMachineHealthCard
+import com.example.agentcontrol.data.model.DashboardSnapshot
+import com.example.agentcontrol.data.model.DashboardSummary
 import com.example.agentcontrol.data.model.JobRecord
 import com.example.agentcontrol.data.model.LaunchSupport
 import com.example.agentcontrol.data.model.LaunchProfileRecord
@@ -52,44 +63,52 @@ import com.example.agentcontrol.data.model.RunningAgentOverview
 import com.example.agentcontrol.data.model.SupervisorEvent
 import com.example.agentcontrol.data.model.WorkspaceRecord
 import com.example.agentcontrol.data.model.defaultModel
+import com.example.agentcontrol.data.model.primaryIssue
 import com.example.agentcontrol.data.model.promptTemplate
 import com.example.agentcontrol.data.model.runtimeSummary
 import com.example.agentcontrol.ui.components.EmptyState
 import com.example.agentcontrol.ui.components.ErrorState
 import com.example.agentcontrol.ui.components.LoadingState
 import com.example.agentcontrol.ui.viewmodel.UiState
+import kotlinx.coroutines.delay
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(
-    machinesState: UiState<List<MachineOverview>>,
-    runningAgentsState: UiState<List<RunningAgentOverview>>,
-    activityState: UiState<List<DashboardActivityItem>>,
+    snapshotState: UiState<DashboardSnapshot>,
     actionMessage: String?,
     actionError: String?,
+    streamStatus: String,
+    hasRetryLaunch: Boolean,
     onMachinesClick: () -> Unit,
     onRunningAgentsClick: () -> Unit,
     onSettingsClick: () -> Unit,
     onRefresh: () -> Unit,
     onMachineClick: (String) -> Unit,
     onOpenAgent: (String, String) -> Unit,
-    onQuickDispatch: (String, String?) -> Unit
+    onQuickDispatch: (String, String?) -> Unit,
+    onRetryLastLaunch: () -> Unit,
+    onOpenLaunch: () -> Unit,
+    onOpenRecentFailures: () -> Unit,
+    onStopAgent: (String, String) -> Unit,
+    onRestartAgent: (String, String) -> Unit
 ) {
     var dispatchType by rememberSaveable { mutableStateOf("gemini") }
     var dispatchTask by rememberSaveable { mutableStateOf("") }
-    val machines = (machinesState as? UiState.Success)?.data.orEmpty()
-    val runningAgents = (runningAgentsState as? UiState.Success)?.data.orEmpty()
-    val activities = (activityState as? UiState.Success)?.data.orEmpty()
-    val connectedMachines = machines.size
-    val onlineMachines = machines.count { it.isOnline }
-    val offlineMachines = connectedMachines - onlineMachines
-    val warningAgents = runningAgents.count { it.status.monitorState == "warning" }
-    val stuckAgents = runningAgents.count { it.status.monitorState == "stuck" }
-    val failedAgents = machines.sumOf { it.machineHealth?.agentsFailed ?: 0 }
-    val launchCount = activities.count { it.title == "Launch" || it.title == "Start" }
-    val completionCount = activities.count { it.title == "Completion" }
-    val failureCount = activities.count { it.title == "Failure" }
-    val restartCount = activities.count { it.title == "Restart" }
+    var statusFilter by rememberSaveable { mutableStateOf("all") }
+    var machineFilter by rememberSaveable { mutableStateOf("all") }
+    var runtimeFilter by rememberSaveable { mutableStateOf("all") }
+    var sortMode by rememberSaveable { mutableStateOf("urgent") }
+    val nowTick by produceState(initialValue = System.currentTimeMillis()) {
+        while (true) {
+            value = System.currentTimeMillis()
+            delay(15_000)
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -105,120 +124,134 @@ fun DashboardScreen(
             )
         }
     ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            item {
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
-                    Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text("Fleet Overview", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            MetricBlock("Connected", connectedMachines.toString())
-                            MetricBlock("Online", onlineMachines.toString())
-                            MetricBlock("Offline", offlineMachines.toString())
-                            MetricBlock("Running", runningAgents.size.toString())
-                        }
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            MetricBlock("Warning", warningAgents.toString())
-                            MetricBlock("Stuck", stuckAgents.toString())
-                            MetricBlock("Failed", failedAgents.toString())
-                            MetricBlock("Recent", activities.size.toString())
+        when (snapshotState) {
+            UiState.Loading -> LoadingState("Building fleet dashboard…")
+            is UiState.Error -> ErrorState(snapshotState.message, onRefresh)
+            is UiState.Success -> {
+                val snapshot = snapshotState.data
+                val machineOptions = listOf("all") + snapshot.machines.map { it.machine.config.name }.distinct()
+                val runtimeOptions = listOf("all") + snapshot.agents.map { it.overview.agent.type }.distinct()
+                val filteredAgents = snapshot.agents
+                    .filter { card ->
+                        when (statusFilter) {
+                            "running" -> card.overview.agent.state.lowercase() in setOf("running", "starting")
+                            "warning" -> card.overview.status.monitorState.equals("warning", true)
+                            "stuck" -> card.overview.status.monitorState.equals("stuck", true)
+                            "failed" -> card.overview.agent.state.equals("failed", true)
+                            else -> true
                         }
                     }
-                }
-            }
-            actionMessage?.let { message ->
-                item {
-                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
-                        Text(message, modifier = Modifier.fillMaxWidth().padding(16.dp))
+                    .filter { machineFilter == "all" || it.machine.name == machineFilter }
+                    .filter { runtimeFilter == "all" || it.overview.agent.type == runtimeFilter }
+                    .sortedWith(
+                        when (sortMode) {
+                            "recent" -> compareByDescending<DashboardAgentCard> { it.overview.agent.updatedAt }
+                            "longest" -> compareByDescending<DashboardAgentCard> { it.overview.status.elapsedSeconds }
+                            "machine" -> compareBy<DashboardAgentCard> { it.machine.name.lowercase() }
+                                .thenBy { it.overview.agent.type }
+                            else -> compareBy<DashboardAgentCard> { dashboardUrgency(it) }
+                                .thenByDescending { it.overview.status.elapsedSeconds }
+                        }
+                    )
+                val lastUpdatedLabel = snapshot.lastUpdatedEpochMs?.let { relativeTime(it, nowTick) } ?: "unknown"
+                val stale = snapshot.lastUpdatedEpochMs?.let { nowTick - it > 90_000 } == true
+
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    item {
+                        FleetSummarySection(
+                            summary = snapshot.summary,
+                            streamStatus = streamStatus,
+                            lastUpdatedLabel = lastUpdatedLabel,
+                            stale = stale
+                        )
                     }
-                }
-            }
-            actionError?.let { item { ErrorState(it, onRefresh) } }
-            item {
-                Card {
-                    Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Quick Launch", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Text("Dispatch a new agent to the best available machine from the dashboard.", style = MaterialTheme.typography.bodySmall)
-                        OutlinedTextField(
-                            value = dispatchType,
-                            onValueChange = { dispatchType = it.lowercase() },
-                            label = { Text("Runtime type") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        OutlinedTextField(
-                            value = dispatchTask,
-                            onValueChange = { dispatchTask = it },
-                            label = { Text("Initial task (optional)") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = { onQuickDispatch(dispatchType, dispatchTask.ifBlank { null }) }, enabled = dispatchType.isNotBlank()) {
-                                Text("Launch")
+                    actionMessage?.let { message ->
+                        item {
+                            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+                                Text(message, modifier = Modifier.fillMaxWidth().padding(16.dp))
                             }
-                            TextButton(onClick = onRefresh) { Text("Refresh Dashboard") }
                         }
                     }
-                }
-            }
-            item {
-                SectionHeader(title = "Running Now", action = "View All", onAction = onRunningAgentsClick)
-            }
-            when (runningAgentsState) {
-                UiState.Loading -> item { LoadingState("Checking active agents…") }
-                is UiState.Error -> item { ErrorState(runningAgentsState.message, onRefresh) }
-                is UiState.Success -> {
-                    if (runningAgents.isEmpty()) {
-                        item { EmptyState("No active agents right now.") }
-                    } else {
-                        items(runningAgents.take(5)) { item ->
-                            RunningAgentCard(item = item, onOpen = { onOpenAgent(item.machine.id, item.status.agentId) })
+                    actionError?.let { item { ErrorState(it, onRefresh) } }
+                    item {
+                        QuickActionsSection(
+                            dispatchType = dispatchType,
+                            dispatchTask = dispatchTask,
+                            hasRetryLaunch = hasRetryLaunch,
+                            onDispatchTypeChange = { dispatchType = it },
+                            onDispatchTaskChange = { dispatchTask = it },
+                            onLaunch = { onQuickDispatch(dispatchType, dispatchTask.ifBlank { null }) },
+                            onRetryLastLaunch = onRetryLastLaunch,
+                            onOpenLaunch = onOpenLaunch,
+                            onOpenRunningAgents = onRunningAgentsClick,
+                            onOpenMachines = onMachinesClick,
+                            onOpenRecentFailures = {
+                                statusFilter = "failed"
+                                onOpenRecentFailures()
+                            }
+                        )
+                    }
+                    item {
+                        SectionHeader(title = "Running Now", action = "Open Running Agents", onAction = onRunningAgentsClick)
+                    }
+                    item {
+                        DashboardFilterSection(
+                            statusFilter = statusFilter,
+                            machineFilter = machineFilter,
+                            runtimeFilter = runtimeFilter,
+                            sortMode = sortMode,
+                            machineOptions = machineOptions,
+                            runtimeOptions = runtimeOptions,
+                            onStatusFilterChange = { statusFilter = it },
+                            onMachineFilterChange = { machineFilter = it },
+                            onRuntimeFilterChange = { runtimeFilter = it },
+                            onSortChange = { sortMode = it }
+                        )
+                    }
+                    item {
+                        if (filteredAgents.isEmpty()) {
+                            EmptyState("No agents match the current dashboard filters.")
+                        } else {
+                            ResponsiveCards(
+                                items = filteredAgents,
+                                columns = 2
+                            ) { card ->
+                                DashboardAgentCardView(
+                                    item = card,
+                                    onOpen = { onOpenAgent(card.machine.id, card.overview.agent.id) },
+                                    onStop = { onStopAgent(card.machine.id, card.overview.agent.id) },
+                                    onRestart = { onRestartAgent(card.machine.id, card.overview.agent.id) }
+                                )
+                            }
                         }
                     }
-                }
-            }
-            item {
-                SectionHeader(title = "Machine Health", action = "Open Machines", onAction = onMachinesClick)
-            }
-            when (machinesState) {
-                UiState.Loading -> item { LoadingState("Loading machines…") }
-                is UiState.Error -> item { ErrorState(machinesState.message, onRefresh) }
-                is UiState.Success -> {
-                    if (machines.isEmpty()) {
-                        item { EmptyState("No machines configured.") }
-                    } else {
-                        items(machines) { machine ->
-                            MachineCard(machine = machine, onClick = { onMachineClick(machine.config.id) })
+                    item {
+                        SectionHeader(title = "Machine Health", action = "Open Machines", onAction = onMachinesClick)
+                    }
+                    item {
+                        if (snapshot.machines.isEmpty()) {
+                            EmptyState("No machines configured.")
+                        } else {
+                            ResponsiveCards(items = snapshot.machines, columns = 2) { machine ->
+                                DashboardMachineCard(machine = machine, onClick = { onMachineClick(machine.machine.config.id) })
+                            }
                         }
                     }
-                }
-            }
-            item {
-                SectionHeader(title = "Recent Activity", action = "Refresh", onAction = onRefresh)
-            }
-            item {
-                Card {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(16.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        MetricBlock("Launches", launchCount.toString())
-                        MetricBlock("Completions", completionCount.toString())
-                        MetricBlock("Failures", failureCount.toString())
-                        MetricBlock("Restarts", restartCount.toString())
+                    item {
+                        SectionHeader(title = "Recent Activity", action = "Refresh", onAction = onRefresh)
                     }
-                }
-            }
-            when (activityState) {
-                UiState.Loading -> item { LoadingState("Loading recent activity…") }
-                is UiState.Error -> item { ErrorState(activityState.message, onRefresh) }
-                is UiState.Success -> {
-                    if (activities.isEmpty()) {
-                        item { EmptyState("No recent launches, completions, failures, or restarts yet.") }
-                    } else {
-                        items(activities.take(8)) { activity ->
-                            DashboardActivityCard(activity = activity, onMachineClick = { onMachineClick(activity.machineId) })
+                    item {
+                        if (snapshot.recentActivity.isEmpty()) {
+                            EmptyState("No recent launches, completions, failures, or state transitions yet.")
+                        } else {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                snapshot.recentActivity.take(12).forEach { activity ->
+                                    DashboardActivityCard(activity = activity, onMachineClick = { onMachineClick(activity.machineId) })
+                                }
+                            }
                         }
                     }
                 }
@@ -1194,6 +1227,298 @@ private fun MachineCard(machine: MachineOverview, onClick: () -> Unit) {
 }
 
 @Composable
+private fun FleetSummarySection(
+    summary: DashboardSummary,
+    streamStatus: String,
+    lastUpdatedLabel: String,
+    stale: Boolean
+) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+        Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Fleet Summary", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text("Readiness in under 10 seconds.", style = MaterialTheme.typography.bodySmall)
+                }
+                StateBadge(if (stale) "stale" else streamStatus)
+            }
+            Text("Last updated $lastUpdatedLabel", style = MaterialTheme.typography.bodySmall)
+            ResponsiveMetricGrid(
+                items = listOf(
+                    "Connected" to summary.connectedMachines.toString(),
+                    "Online" to summary.onlineMachines.toString(),
+                    "Offline" to summary.offlineMachines.toString(),
+                    "Running" to summary.runningAgents.toString(),
+                    "Warning" to summary.warningAgents.toString(),
+                    "Stuck" to summary.stuckAgents.toString(),
+                    "Failed" to summary.failedAgents.toString(),
+                    "Queued" to summary.queuedTasks.toString(),
+                    "Completed (1h)" to summary.recentCompletionsLastHour.toString(),
+                )
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ResponsiveMetricGrid(items: List<Pair<String, String>>) {
+    FlowRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        maxItemsInEachRow = 3
+    ) {
+        items.forEach { (label, value) ->
+            Surface(
+                modifier = Modifier.widthIn(min = 96.dp),
+                color = MaterialTheme.colorScheme.surface,
+                shape = MaterialTheme.shapes.medium
+            ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(label, style = MaterialTheme.typography.bodySmall)
+                    Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuickActionsSection(
+    dispatchType: String,
+    dispatchTask: String,
+    hasRetryLaunch: Boolean,
+    onDispatchTypeChange: (String) -> Unit,
+    onDispatchTaskChange: (String) -> Unit,
+    onLaunch: () -> Unit,
+    onRetryLastLaunch: () -> Unit,
+    onOpenLaunch: () -> Unit,
+    onOpenRunningAgents: () -> Unit,
+    onOpenMachines: () -> Unit,
+    onOpenRecentFailures: () -> Unit
+) {
+    Card {
+        Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Quick Actions", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                listOf("gemini", "hermes", "codex").forEachIndexed { index, type ->
+                    SegmentedButton(
+                        selected = dispatchType == type,
+                        onClick = { onDispatchTypeChange(type) },
+                        shape = androidx.compose.material3.SegmentedButtonDefaults.itemShape(index = index, count = 3)
+                    ) {
+                        Text(type.uppercase())
+                    }
+                }
+            }
+            OutlinedTextField(
+                value = dispatchTask,
+                onValueChange = onDispatchTaskChange,
+                label = { Text("Best-available launch task") },
+                modifier = Modifier.fillMaxWidth()
+            )
+            ResponsiveActionRow(
+                actions = listOf(
+                    "Launch New" to onOpenLaunch,
+                    "Best Available" to onLaunch,
+                    "Retry Last" to onRetryLastLaunch,
+                    "Running Agents" to onOpenRunningAgents,
+                    "Machine Detail" to onOpenMachines,
+                    "Recent Failures" to onOpenRecentFailures
+                ),
+                disabled = setOfNotNull(if (hasRetryLaunch) null else "Retry Last")
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ResponsiveActionRow(actions: List<Pair<String, () -> Unit>>, disabled: Set<String> = emptySet()) {
+    FlowRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        actions.forEach { (label, action) ->
+            if (label == "Best Available") {
+                Button(onClick = action) { Text(label) }
+            } else {
+                TextButton(onClick = action, enabled = label !in disabled) { Text(label) }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DashboardFilterSection(
+    statusFilter: String,
+    machineFilter: String,
+    runtimeFilter: String,
+    sortMode: String,
+    machineOptions: List<String>,
+    runtimeOptions: List<String>,
+    onStatusFilterChange: (String) -> Unit,
+    onMachineFilterChange: (String) -> Unit,
+    onRuntimeFilterChange: (String) -> Unit,
+    onSortChange: (String) -> Unit
+) {
+    Card {
+        Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Filters & Sort", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("all", "running", "warning", "stuck", "failed").forEach { filter ->
+                    FilterChip(selected = statusFilter == filter, onClick = { onStatusFilterChange(filter) }, label = { Text(filter.replaceFirstChar { it.uppercase() }) })
+                }
+            }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                machineOptions.forEach { option ->
+                    FilterChip(selected = machineFilter == option, onClick = { onMachineFilterChange(option) }, label = { Text(if (option == "all") "All Machines" else option) })
+                }
+            }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                runtimeOptions.forEach { option ->
+                    FilterChip(selected = runtimeFilter == option, onClick = { onRuntimeFilterChange(option) }, label = { Text(if (option == "all") "All Runtimes" else option.uppercase()) })
+                }
+            }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(
+                    "urgent" to "Most Urgent",
+                    "recent" to "Most Recent",
+                    "longest" to "Longest Running",
+                    "machine" to "Machine Name",
+                ).forEach { (value, label) ->
+                    FilterChip(selected = sortMode == value, onClick = { onSortChange(value) }, label = { Text(label) })
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun <T> ResponsiveCards(
+    items: List<T>,
+    columns: Int,
+    content: @Composable (T) -> Unit
+) {
+    BoxWithConstraints {
+        val wide = maxWidth > 840.dp
+        val perRow = if (wide) columns else 1
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            items.chunked(perRow).forEach { rowItems ->
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    rowItems.forEach { item ->
+                        Box(modifier = Modifier.weight(1f)) {
+                            content(item)
+                        }
+                    }
+                    repeat((perRow - rowItems.size).coerceAtLeast(0)) {
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DashboardAgentCardView(
+    item: DashboardAgentCard,
+    onOpen: () -> Unit,
+    onStop: () -> Unit,
+    onRestart: () -> Unit
+) {
+    val overview = item.overview
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = when {
+                overview.status.monitorState.equals("stuck", true) -> Color(0xFFFFF1E5)
+                overview.agent.state.equals("failed", true) -> Color(0xFFFDECEC)
+                overview.status.monitorState.equals("warning", true) -> Color(0xFFFFF7DD)
+                else -> MaterialTheme.colorScheme.surface
+            }
+        )
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("${item.machine.name} • ${overview.agent.type.uppercase()}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(overview.agent.id, style = MaterialTheme.typography.bodySmall)
+                }
+                StateBadge(overview.status.monitorState)
+            }
+            Text(overview.agent.currentTask ?: overview.currentJob?.inputText ?: "No active task", style = MaterialTheme.typography.bodyMedium)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                MetricPill("Elapsed", formatDuration(overview.status.elapsedSeconds))
+                MetricPill("Workspace", overview.agent.workspace ?: "-")
+                MetricPill("Heartbeat", overview.status.lastHeartbeat?.let { formatTimestampCompact(it) } ?: "-")
+                MetricPill("Last Output", overview.status.lastOutputAt?.let { formatTimestampCompact(it) } ?: overview.status.lastLogTimestamp?.let { formatTimestampCompact(it) } ?: "-")
+                MetricPill("PID", overview.agent.pid?.toString() ?: "-")
+            }
+            overview.agent.runtimeSummary?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            (overview.status.recentLogs.lastOrNull()?.message ?: overview.latestCompletedJob?.summary)?.let { snippet ->
+                Text(snippet, style = MaterialTheme.typography.bodySmall)
+            }
+            overview.primaryIssue?.let { issue ->
+                Text(issue, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = onOpen) { Text("Open") }
+                TextButton(onClick = onRestart) { Text("Restart") }
+                TextButton(onClick = onStop) { Text("Stop") }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DashboardMachineCard(machine: DashboardMachineHealthCard, onClick: () -> Unit) {
+    val overview = machine.machine
+    Card(
+        modifier = Modifier.fillMaxWidth().clickable { onClick() },
+        colors = CardDefaults.cardColors(
+            containerColor = if (machine.unhealthy) Color(0xFFFFFAF0) else MaterialTheme.colorScheme.surface
+        )
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(overview.config.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(overview.config.baseUrl, style = MaterialTheme.typography.bodySmall)
+                }
+                StateBadge(
+                    when {
+                        !overview.isOnline -> "offline"
+                        overview.machineHealth != null -> overview.machineHealth.monitorState
+                        else -> "online"
+                    }
+                )
+            }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                MetricPill("Heartbeat", overview.machineHealth?.lastHeartbeat?.let { formatTimestampCompact(it) } ?: "-")
+                MetricPill("Agents", machine.activeAgentCount.toString())
+                MetricPill("Capacity", overview.machine?.workerPool?.let { "${it.busyWorkers}/${it.desiredWorkers}" } ?: "-")
+                MetricPill("Queued", (overview.machineHealth?.queuedJobs ?: 0).toString())
+                overview.machineHealth?.resources?.cpuPercent?.let { MetricPill("CPU", "${it.toInt()}%") }
+                overview.machineHealth?.resources?.memoryMb?.let { MetricPill("Memory", "${it.toInt()} MB") }
+            }
+            if (machine.unhealthy) {
+                Text(
+                    overview.error ?: overview.machineHealth?.adapterWarnings?.firstOrNull() ?: "Supervisor needs attention",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun RunningAgentCard(item: RunningAgentOverview, onOpen: () -> Unit) {
     Card(modifier = Modifier.fillMaxWidth().clickable { onOpen() }) {
         Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1400,9 +1725,9 @@ private fun StateBadge(state: String) {
     val background = when (state.lowercase()) {
         "online", "live", "idle", "completed", "healthy" -> Color(0xFFDDEED5)
         "running", "starting", "connecting…", "connecting" -> Color(0xFFFFE8BF)
-        "warning", "stopping", "reconnecting…" -> Color(0xFFFFD9B8)
+        "warning", "stopping", "reconnecting…", "reconnecting", "pending" -> Color(0xFFFFD9B8)
         "stuck" -> Color(0xFFFFCBA6)
-        "selected" -> Color(0xFFD8E5F7)
+        "selected", "stale" -> Color(0xFFD8E5F7)
         "offline", "failed", "stopped", "rejected", "error" -> Color(0xFFF6D4D7)
         else -> MaterialTheme.colorScheme.surfaceVariant
     }
@@ -1450,4 +1775,28 @@ private fun formatDuration(totalSeconds: Int): String {
         minutes > 0 -> "${minutes}m ${seconds}s"
         else -> "${seconds}s"
     }
+}
+
+private fun dashboardUrgency(item: DashboardAgentCard): Int = when {
+    item.overview.status.monitorState.equals("stuck", true) -> 0
+    item.overview.agent.state.equals("failed", true) -> 1
+    item.overview.status.monitorState.equals("warning", true) -> 2
+    item.overview.agent.state.equals("running", true) -> 3
+    item.overview.agent.state.equals("starting", true) -> 4
+    item.overview.agent.state.equals("pending", true) -> 5
+    else -> 6
+}
+
+private fun relativeTime(epochMs: Long, nowMs: Long): String {
+    val seconds = ((nowMs - epochMs) / 1000).coerceAtLeast(0)
+    return formatDuration(seconds.toInt()) + " ago"
+}
+
+private fun formatTimestampCompact(value: String): String {
+    return runCatching {
+        val instant = Instant.parse(value)
+        DateTimeFormatter.ofPattern("MMM d, HH:mm")
+            .withZone(ZoneId.systemDefault())
+            .format(instant)
+    }.getOrDefault(value)
 }
