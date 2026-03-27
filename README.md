@@ -1,6 +1,6 @@
-# Agent Control MVP
+# Mobile Agent Control
 
-Agent Control MVP is a vendor-neutral mobile control plane for terminal-native coding agents.
+Mobile Agent Control is a vendor-neutral mobile control plane for terminal-native coding agents.
 
 The current implementation provides:
 

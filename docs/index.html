@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mobile Agent Control</title>
+  <meta name="description" content="Mobile Agent Control is a vendor-neutral mobile control plane for terminal-native coding agents, with Gemini CLI as the flagship integration.">
+  <meta name="theme-color" content="#edf4ff">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="site-shell">
+    <header class="topbar">
+      <a class="brand" href="./index.html">
+        <span class="brand-mark">MAC</span>
+        <span class="brand-copy">
+          <strong>Mobile Agent Control</strong>
+          <span>Mobile control plane for coding agents</span>
+        </span>
+      </a>
+      <nav class="topnav" aria-label="Primary">
+        <a href="#what">What It Is</a>
+        <a href="#capabilities">Capabilities</a>
+        <a href="#dashboard">Dashboard</a>
+        <a href="#architecture">How It Works</a>
+        <a href="#roadmap">Roadmap</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Vendor-neutral control plane</p>
+          <h1>Operate terminal-native coding agents from your phone or browser.</h1>
+          <p class="hero-subhead">
+            Mobile Agent Control gives you a serious remote operations layer for Gemini CLI and other coding runtimes running on your own machines.
+            Launch work, monitor progress, see machine health, and intervene fast without being locked to a single vendor UX.
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="https://github.com/manishklach/mobile-agent-control">View GitHub Repo</a>
+            <a class="button secondary" href="./architecture.md">View Architecture / Features</a>
+          </div>
+          <ul class="hero-points">
+            <li>Gemini CLI is the flagship integration today.</li>
+            <li>Adapter-driven runtime model for Codex, Hermes, Copilot, and more.</li>
+            <li>Built as a control plane, not just a mobile chat shell.</li>
+          </ul>
+        </div>
+        <div class="hero-visual card">
+          <div class="hero-visual-header">
+            <span class="status-dot"></span>
+            <span>Fleet Snapshot</span>
+          </div>
+          <div class="hero-metrics">
+            <div class="metric-card">
+              <span class="metric-label">Online Machines</span>
+              <strong>1</strong>
+              <span class="metric-meta">Private supervisor reachability</span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Running Agents</span>
+              <strong>3</strong>
+              <span class="metric-meta">Gemini-first operations</span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Warnings / Stuck</span>
+              <strong>1</strong>
+              <span class="metric-meta">Escalated visibly</span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Queued Tasks</span>
+              <strong>2</strong>
+              <span class="metric-meta">Capacity-aware routing</span>
+            </div>
+          </div>
+          <div class="hero-feed">
+            <div class="feed-row">
+              <span class="chip good">running</span>
+              <div>
+                <strong>Gemini Local CLI</strong>
+                <p>Summarizing repo changes on workstation-main</p>
+              </div>
+            </div>
+            <div class="feed-row">
+              <span class="chip warn">warning</span>
+              <div>
+                <strong>Codex Local CLI</strong>
+                <p>No output for 82s, surfaced for review</p>
+              </div>
+            </div>
+            <div class="feed-row">
+              <span class="chip info">queued</span>
+              <div>
+                <strong>Hermes via WSL</strong>
+                <p>Waiting for free worker capacity</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="what" class="content-section">
+        <div class="section-intro">
+          <p class="eyebrow">What It Is</p>
+          <h2>A remote control and monitoring layer for coding agents running on your own machines.</h2>
+        </div>
+        <div class="two-column">
+          <div class="card prose">
+            <p>
+              Mobile Agent Control sits above machine-local agent runtimes and gives you an operator-grade surface for launch, monitoring, lifecycle control, logs, machine health, and recent activity.
+            </p>
+            <p>
+              The Android client and responsive web console are both thin control surfaces. The machine-side FastAPI supervisor owns lifecycle state, worker capacity, websocket event streaming, runtime adapter integration, and audit history.
+            </p>
+          </div>
+          <div class="card highlight-card">
+            <h3>Control Plane Positioning</h3>
+            <ul class="checklist">
+              <li>Remote launch and control for terminal-native agent runtimes</li>
+              <li>Vendor-neutral machine, agent, task, and audit model</li>
+              <li>Gemini-first depth without collapsing the architecture into a single vendor</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="content-section">
+        <div class="section-intro">
+          <p class="eyebrow">Why It Exists</p>
+          <h2>Coding agents do not stay neatly bound to one terminal on one machine.</h2>
+        </div>
+        <div class="problem-grid">
+          <article class="card problem-card">
+            <h3>Multiple machines</h3>
+            <p>Desktop, laptop, and remote boxes drift apart quickly when agents are running in different places.</p>
+          </article>
+          <article class="card problem-card">
+            <h3>Long-running work</h3>
+            <p>Agent runs can last long enough that you need to check status, logs, and health without staying at the desk.</p>
+          </article>
+          <article class="card problem-card">
+            <h3>Fast intervention</h3>
+            <p>When something stalls or fails, you need stop, restart, retry, and prompt actions immediately, not after reconnecting manually.</p>
+          </article>
+          <article class="card problem-card">
+            <h3>Neutral control layer</h3>
+            <p>Vendor-specific CLIs are strong local tools, but they are not a unified remote fleet operations surface.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="capabilities" class="content-section">
+        <div class="section-intro">
+          <p class="eyebrow">Key Capabilities</p>
+          <h2>High-signal operator workflows built around real agent lifecycle control.</h2>
+        </div>
+        <div class="feature-grid">
+          <article class="card feature-card">
+            <h3>Launch agents remotely</h3>
+            <p>Start new agent processes on selected machines using safe launch profiles, approved workspaces, and runtime-aware options.</p>
+          </article>
+          <article class="card feature-card">
+            <h3>Monitor running agents live</h3>
+            <p>See state transitions, elapsed runtime, heartbeat, last output, logs, and warning or stuck indicators in near real time.</p>
+          </article>
+          <article class="card feature-card">
+            <h3>Intervene fast</h3>
+            <p>Stop, restart, retry, and prompt active agents from mobile or web without dropping into a terminal session first.</p>
+          </article>
+          <article class="card feature-card">
+            <h3>View machine health and activity</h3>
+            <p>Track worker capacity, queue depth, resource hints, recent launches, completions, failures, and supervisor trust signals.</p>
+          </article>
+          <article class="card feature-card accent-card">
+            <h3>Gemini-first, adapter-driven</h3>
+            <p>Gemini CLI is the flagship integration today, but the architecture is intentionally runtime-neutral through CLI adapters and shared supervisor models.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="dashboard" class="content-section dashboard-section">
+        <div class="section-intro">
+          <p class="eyebrow">Dashboard Spotlight</p>
+          <h2>An operator console home screen, not a pile of admin panels.</h2>
+        </div>
+        <div class="dashboard-layout">
+          <div class="card dashboard-mock">
+            <div class="mock-topbar">
+              <span class="mock-title">Operator Dashboard</span>
+              <span class="chip info">Live</span>
+            </div>
+            <div class="mock-summary">
+              <div class="mock-summary-card">
+                <span>Total Connected Machines</span>
+                <strong>1</strong>
+              </div>
+              <div class="mock-summary-card">
+                <span>Running Agents</span>
+                <strong>3</strong>
+              </div>
+              <div class="mock-summary-card">
+                <span>Warnings / Stuck</span>
+                <strong>1</strong>
+              </div>
+              <div class="mock-summary-card">
+                <span>Queued Tasks</span>
+                <strong>2</strong>
+              </div>
+            </div>
+            <div class="mock-columns">
+              <div class="mock-panel">
+                <h3>Running Now</h3>
+                <div class="mock-row">
+                  <span class="chip good">running</span>
+                  <div>
+                    <strong>Gemini Local CLI</strong>
+                    <p>workspace: Playground</p>
+                  </div>
+                </div>
+                <div class="mock-row">
+                  <span class="chip warn">warning</span>
+                  <div>
+                    <strong>Codex Local CLI</strong>
+                    <p>last output 82s ago</p>
+                  </div>
+                </div>
+              </div>
+              <div class="mock-panel">
+                <h3>Machine Health</h3>
+                <div class="mock-stat">Heartbeat: live</div>
+                <div class="mock-stat">Capacity: 1 / 2 busy</div>
+                <div class="mock-stat">CPU: if available</div>
+                <div class="mock-stat">Memory: if available</div>
+              </div>
+            </div>
+            <div class="mock-panel activity-panel">
+              <h3>Recent Activity</h3>
+              <p>Launches, completions, failures, restarts, stop requests, and machine transitions appear here.</p>
+            </div>
+          </div>
+          <div class="dashboard-copy">
+            <div class="card dashboard-copy-card">
+              <h3>Fleet summary</h3>
+              <p>Understand total machine state, online vs offline reachability, running agents, queue pressure, and recent completions in a glance.</p>
+            </div>
+            <div class="card dashboard-copy-card">
+              <h3>Running agents</h3>
+              <p>See runtime type, machine, workspace, elapsed time, last output, and fast actions where intervention matters most.</p>
+            </div>
+            <div class="card dashboard-copy-card">
+              <h3>Machine health</h3>
+              <p>Use supervisor heartbeat, capacity, and optional CPU or memory visibility to decide where work should go next.</p>
+            </div>
+            <div class="card dashboard-copy-card">
+              <h3>Recent activity and quick actions</h3>
+              <p>Keep launches, failures, restarts, and retries close to the top-level operator experience instead of buried in detail screens.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="architecture" class="content-section">
+        <div class="section-intro">
+          <p class="eyebrow">How It Works</p>
+          <h2>Control UI on top, machine supervisor in the middle, runtime adapters underneath.</h2>
+        </div>
+        <div class="card architecture-card">
+          <div class="arch-flow">
+            <div class="arch-node primary">
+              <span>Phone / Browser</span>
+              <strong>Android + Responsive Web</strong>
+            </div>
+            <div class="arch-arrow">→</div>
+            <div class="arch-node">
+              <span>Control UI</span>
+              <strong>Dashboard, launch, monitoring, intervention</strong>
+            </div>
+            <div class="arch-arrow">→</div>
+            <div class="arch-node">
+              <span>Machine-side supervisor</span>
+              <strong>FastAPI orchestration + lifecycle state</strong>
+            </div>
+          </div>
+          <div class="arch-subgrid">
+            <div class="arch-node">
+              <span>Runtime adapters</span>
+              <strong>Gemini CLI, Codex CLI, Hermes, more</strong>
+            </div>
+            <div class="arch-node">
+              <span>Coding agent CLIs</span>
+              <strong>Real local processes, logs, prompts, restarts</strong>
+            </div>
+            <div class="arch-node">
+              <span>Pre-release transport</span>
+              <strong>Private connectivity over Tailscale</strong>
+            </div>
+            <div class="arch-node future">
+              <span>Future control plane</span>
+              <strong>Cloud-routed transport without UI rewrite</strong>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="content-section">
+        <div class="section-intro">
+          <p class="eyebrow">Why This Is Different</p>
+          <h2>Built as a control plane, not a wrapper around a single terminal workflow.</h2>
+        </div>
+        <div class="diff-grid">
+          <article class="card diff-card">
+            <h3>Not tied to one vendor</h3>
+            <p>Shared machine, agent, task, audit, and launch-profile models stay neutral while adapters handle runtime-specific behavior.</p>
+          </article>
+          <article class="card diff-card">
+            <h3>Not just local terminal UX</h3>
+            <p>The machine supervisor owns lifecycle state, worker capacity, logs, websocket events, and operator-visible audit history.</p>
+          </article>
+          <article class="card diff-card">
+            <h3>Not just chat on mobile</h3>
+            <p>The product is centered on launch, monitoring, health, intervention, and routing decisions across agent workloads.</p>
+          </article>
+          <article class="card diff-card accent-card">
+            <h3>Gemini-first wedge</h3>
+            <p>Gemini CLI is the deepest supported runtime today, but the product is positioned to extend across other terminal-native coding agents cleanly.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="roadmap" class="content-section">
+        <div class="section-intro">
+          <p class="eyebrow">Roadmap</p>
+          <h2>Practical evolution from strong MVP to fuller control plane.</h2>
+        </div>
+        <div class="roadmap">
+          <div class="roadmap-item card">
+            <span class="roadmap-stage">Current</span>
+            <h3>Working MVP</h3>
+            <p>Android and web operator surfaces, supervisor lifecycle control, monitoring, adapters, workspaces, MCP visibility, and Gemini-first runtime support.</p>
+          </div>
+          <div class="roadmap-item card">
+            <span class="roadmap-stage">Next</span>
+            <h3>Monitoring hardening</h3>
+            <p>Stale-data trust signals, reconnect handling, stronger machine health heuristics, and better failure surfacing.</p>
+          </div>
+          <div class="roadmap-item card">
+            <span class="roadmap-stage">Next</span>
+            <h3>Dashboard polish</h3>
+            <p>Sharper prioritization, richer recent activity, screenshots, and tighter fast-intervention workflows.</p>
+          </div>
+          <div class="roadmap-item card">
+            <span class="roadmap-stage">Reliability</span>
+            <h3>Persistence and recovery</h3>
+            <p>Stronger state durability, recovery semantics, and operational trust under supervisor restarts or failures.</p>
+          </div>
+          <div class="roadmap-item card">
+            <span class="roadmap-stage">Surface</span>
+            <h3>Browser-first control plane</h3>
+            <p>Continue strengthening the responsive web console so it stands as a first-class operator entry point.</p>
+          </div>
+          <div class="roadmap-item card">
+            <span class="roadmap-stage">Future</span>
+            <h3>Cloud-routed architecture</h3>
+            <p>Move from private direct reachability to a brokered control plane without rewriting the product model.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="footer-copy">
+        <strong>Mobile Agent Control</strong>
+        <p>Vendor-neutral control and monitoring for terminal-native coding agents.</p>
+      </div>
+      <div class="footer-links">
+        <a href="https://github.com/manishklach/mobile-agent-control">GitHub Repo</a>
+        <a href="./architecture.md">Architecture</a>
+        <a href="https://github.com/manishklach/mobile-agent-control#readme">Setup Instructions</a>
+        <a href="#dashboard">Dashboard Spotlight</a>
+      </div>
+    </footer>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>

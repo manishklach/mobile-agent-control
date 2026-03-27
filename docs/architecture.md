@@ -1,4 +1,4 @@
-# Control Plane Architecture
+# Mobile Agent Control Architecture
 
 ## System Architecture
 
