@@ -512,8 +512,15 @@ fun LaunchAgentScreen(
             else -> ""
         }
     }
-    LaunchedEffect(agentType, selectedWorkspace) {
-        val adapterId = if (agentType == "gemini") "gemini-cli" else "codex-cli"
+    val profileOptions = (profilesState as? UiState.Success)?.data.orEmpty()
+    val visibleAgentTypes = profileOptions.map { it.agentType }.distinct().ifEmpty { listOf("gemini", "hermes", "codex") }
+    val selectedProfile = profileOptions.firstOrNull { it.id == selectedProfileId }
+    LaunchedEffect(agentType, selectedWorkspace, selectedProfileId, profilesState) {
+        val adapterId = selectedProfile?.adapterId ?: when (agentType) {
+            "gemini" -> "gemini-cli"
+            "hermes" -> "hermes-cli"
+            else -> "codex-cli"
+        }
         onLaunchSupportRefresh(adapterId, selectedWorkspace.ifBlank { null })
     }
 
@@ -545,7 +552,7 @@ fun LaunchAgentScreen(
                     Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text("Agent Type", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            listOf("codex", "gemini").forEach { type ->
+                            visibleAgentTypes.forEach { type ->
                                 FilterChip(
                                     selected = agentType == type,
                                     onClick = {
@@ -677,73 +684,76 @@ fun LaunchAgentScreen(
                                 }
                             }
                         }
-                        if (agentType == "gemini") {
-                            when (launchSupportState) {
-                                UiState.Loading -> LoadingState("Checking Gemini runtime support…")
-                                is UiState.Error -> ErrorState(launchSupportState.message, onRefresh)
-                                is UiState.Success -> {
-                                    val support = launchSupportState.data
-                                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
-                                        Column(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                            Text("Gemini Runtime", fontWeight = FontWeight.SemiBold)
-                                            Text(
-                                                listOfNotNull(
-                                                    support.adapter?.status?.version?.let { "Version $it" },
-                                                    support.adapter?.status?.auth?.message,
-                                                ).joinToString(" • ").ifBlank { "Gemini CLI ready" },
-                                                style = MaterialTheme.typography.bodySmall
+                        when (launchSupportState) {
+                            UiState.Loading -> LoadingState("Checking runtime support…")
+                            is UiState.Error -> ErrorState(launchSupportState.message, onRefresh)
+                            is UiState.Success -> {
+                                val support = launchSupportState.data
+                                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                                    Column(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Text(selectedProfile?.label ?: support.adapter?.label ?: "Runtime", fontWeight = FontWeight.SemiBold)
+                                        Text(
+                                            listOfNotNull(
+                                                support.adapter?.status?.version?.let { "Version $it" },
+                                                support.adapter?.status?.auth?.message,
+                                            ).joinToString(" • ").ifBlank { "Runtime ready" },
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                        support.adapter?.status?.installed?.message?.let { message ->
+                                            if (!support.adapter.status.installed.available) {
+                                                Text(message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                                            }
+                                        }
+                                        support.adapter?.status?.warnings?.forEach { warning ->
+                                            Text(warning, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                                        }
+                                        if (support.adapter?.capabilities?.supportsModelSelection == true) {
+                                            OutlinedTextField(
+                                                value = runtimeModel,
+                                                onValueChange = { runtimeModel = it },
+                                                label = { Text("Model (optional)") },
+                                                modifier = Modifier.fillMaxWidth()
                                             )
-                                            support.adapter?.status?.warnings?.forEach { warning ->
-                                                Text(warning, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                                            }
-                                            if (support.adapter?.capabilities?.supportsModelSelection == true) {
-                                                OutlinedTextField(
-                                                    value = runtimeModel,
-                                                    onValueChange = { runtimeModel = it },
-                                                    label = { Text("Model (optional)") },
-                                                    modifier = Modifier.fillMaxWidth()
-                                                )
-                                            }
-                                            if (support.commands.isNotEmpty()) {
-                                                Text("Slash Command", fontWeight = FontWeight.SemiBold)
-                                                support.commands.take(8).forEach { command ->
-                                                    Card(
-                                                        colors = CardDefaults.cardColors(
-                                                            containerColor = if (selectedCommand == command.name) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface
-                                                        )
+                                        }
+                                        if (support.adapter?.capabilities?.supportsCommandTemplates == true && support.commands.isNotEmpty()) {
+                                            Text("Slash Command", fontWeight = FontWeight.SemiBold)
+                                            support.commands.take(8).forEach { command ->
+                                                Card(
+                                                    colors = CardDefaults.cardColors(
+                                                        containerColor = if (selectedCommand == command.name) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface
+                                                    )
+                                                ) {
+                                                    Column(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .clickable { selectedCommand = if (selectedCommand == command.name) "" else command.name }
+                                                            .padding(10.dp),
+                                                        verticalArrangement = Arrangement.spacedBy(4.dp)
                                                     ) {
-                                                        Column(
-                                                            modifier = Modifier
-                                                                .fillMaxWidth()
-                                                                .clickable { selectedCommand = if (selectedCommand == command.name) "" else command.name }
-                                                                .padding(10.dp),
-                                                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                                                        Row(
+                                                            modifier = Modifier.fillMaxWidth(),
+                                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                                            verticalAlignment = Alignment.CenterVertically
                                                         ) {
-                                                            Row(
-                                                                modifier = Modifier.fillMaxWidth(),
-                                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                                verticalAlignment = Alignment.CenterVertically
-                                                            ) {
-                                                                Text("/${command.name}", fontWeight = FontWeight.SemiBold)
-                                                                MetricPill("Scope", command.scope)
-                                                            }
-                                                            command.description?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-                                                            command.promptPreview?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                                                            Text("/${command.name}", fontWeight = FontWeight.SemiBold)
+                                                            MetricPill("Scope", command.scope)
                                                         }
+                                                        command.description?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                                                        command.promptPreview?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                                                     }
                                                 }
                                             }
-                                            if (support.mcpServers.isNotEmpty()) {
-                                                Text("MCP", fontWeight = FontWeight.SemiBold)
-                                                support.mcpServers.take(6).forEach { server ->
-                                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                                        StateBadge(server.health)
-                                                        Text(server.name, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
-                                                        Text("${server.scope} • ${server.transport}", style = MaterialTheme.typography.bodySmall)
-                                                    }
-                                                    server.warning?.let {
-                                                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                                                    }
+                                        }
+                                        if (support.adapter?.capabilities?.supportsMcp == true && support.mcpServers.isNotEmpty()) {
+                                            Text("MCP", fontWeight = FontWeight.SemiBold)
+                                            support.mcpServers.take(6).forEach { server ->
+                                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                    StateBadge(server.health)
+                                                    Text(server.name, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                                                    Text("${server.scope} • ${server.transport}", style = MaterialTheme.typography.bodySmall)
+                                                }
+                                                server.warning?.let {
+                                                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                                                 }
                                             }
                                         }

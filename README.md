@@ -10,7 +10,7 @@ The current implementation provides:
 - a vendor-neutral CLI runtime adapter layer
 - Gemini-first slash command and MCP awareness
 
-Gemini CLI is the flagship default integration in the demo config and quickstart, while Codex CLI is implemented through the same adapter contract.
+Gemini CLI is the flagship default integration in the demo config and quickstart, while Codex CLI and Hermes Agent are implemented through the same adapter contract.
 
 For pre-release deployment, use Tailscale only as the private connectivity layer between the Android client and each machine supervisor. This is not the final product architecture.
 
@@ -58,6 +58,7 @@ backend/
     adapters/
       base.py
       gemini_cli.py
+      hermes_cli.py
       codex_cli.py
       copilot_cli.py
       registry.py
@@ -162,6 +163,15 @@ curl -X POST http://localhost:8000/agents/launch `
   -d "{\"type\":\"codex\",\"launch_profile\":\"codex-safe-default\",\"workspace\":\"C:\\Users\\ManishKL\\Documents\\Playground\",\"initial_prompt\":\"Print startup status\"}"
 ```
 
+Launch a supervised Hermes Agent process through WSL:
+
+```powershell
+curl -X POST http://localhost:8000/agents/launch `
+  -H "Authorization: Bearer 0118" `
+  -H "Content-Type: application/json" `
+  -d "{\"type\":\"hermes\",\"launch_profile\":\"hermes-safe-default\",\"workspace\":\"C:\\Users\\ManishKL\\Documents\\Playground\",\"initial_prompt\":\"Summarize this repository\"}"
+```
+
 Submit a task:
 
 ```powershell
@@ -239,6 +249,18 @@ gemini -p "Reply with exactly: hello from gemini" --output-format json
 
 Once that succeeds locally, the supervisor can launch Gemini through `gemini-safe-default`.
 
+Hermes setup on the machine:
+
+1. Install Hermes inside WSL.
+2. Run `hermes setup` inside WSL to configure a provider and local state.
+3. Confirm non-interactive mode works inside WSL with:
+
+```powershell
+wsl.exe --cd /tmp hermes chat -q "Reply with exactly: hello from hermes"
+```
+
+Once that succeeds in WSL, the supervisor can launch Hermes through `hermes-safe-default`.
+
 Gemini-first operator features:
 
 - The Android launch flow now defaults to Gemini and can surface Gemini CLI version/auth status.
@@ -251,6 +273,7 @@ Adapter architecture:
 
 - `CliAgentRuntimeAdapter`: vendor-neutral interface for terminal-native runtimes
 - `GeminiCliAdapter`: default example adapter and demo path
+- `HermesCliAdapter`: WSL-backed Hermes runtime adapter for Windows hosts
 - `CodexCliAdapter`: alternate real CLI adapter
 - `CopilotCliAdapter`: registered adapter placeholder for future activation
 - `CliRuntimeExecutor`: supervisor-facing executor that delegates all vendor logic to adapters

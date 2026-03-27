@@ -16,6 +16,19 @@
       }
     },
     {
+      "id": "hermes-safe-default",
+      "agent_type": "hermes",
+      "adapter_id": "hermes-cli",
+      "label": "Hermes Agent (WSL)",
+      "description": "Launches Hermes Agent through WSL using the same supervised control-plane adapter flow.",
+      "env": {},
+      "workspace_required": true,
+      "supports_initial_prompt": true,
+      "metadata": {
+        "quickstart": "Hermes Agent workflow through WSL on Windows. Run hermes setup inside WSL first."
+      }
+    },
+    {
       "id": "codex-safe-default",
       "agent_type": "codex",
       "adapter_id": "codex-cli",

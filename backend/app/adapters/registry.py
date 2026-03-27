@@ -4,11 +4,13 @@ from app.adapters.base import CliAgentRuntimeAdapter
 from app.adapters.codex_cli import CodexCliAdapter
 from app.adapters.copilot_cli import CopilotCliAdapter
 from app.adapters.gemini_cli import GeminiCliAdapter
+from app.adapters.hermes_cli import HermesCliAdapter
 
 
 def get_runtime_adapters() -> dict[str, CliAgentRuntimeAdapter]:
     adapters: list[CliAgentRuntimeAdapter] = [
         GeminiCliAdapter(),
+        HermesCliAdapter(),
         CodexCliAdapter(),
         CopilotCliAdapter(),
     ]
