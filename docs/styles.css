@@ -172,12 +172,24 @@ a {
   border-color: var(--line);
 }
 
-.hero-points {
-  margin: 0;
-  padding-left: 18px;
-  color: var(--muted);
-  display: grid;
-  gap: 8px;
+.hero-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.inline-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.8);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .card {
@@ -398,6 +410,22 @@ a {
     radial-gradient(circle at top left, rgba(29,78,216,0.08), transparent 16rem);
 }
 
+.screenshot-label {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px dashed rgba(29, 78, 216, 0.25);
+  background: rgba(29, 78, 216, 0.06);
+  color: var(--brand);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  margin-bottom: 14px;
+}
+
 .mock-title {
   font-weight: 700;
   color: var(--ink);
@@ -429,6 +457,10 @@ a {
 
 .activity-panel p {
   margin: 0;
+}
+
+.spotlight-card {
+  background: linear-gradient(180deg, #f8fbff, #edf4ff);
 }
 
 .architecture-card {
@@ -507,6 +539,17 @@ a {
   gap: 20px;
   padding-top: 18px;
   border-top: 1px solid var(--line);
+}
+
+.text-link {
+  display: inline-flex;
+  margin-top: 14px;
+  color: var(--brand);
+  font-weight: 700;
+}
+
+.text-link:hover {
+  text-decoration: underline;
 }
 
 .footer-copy p {

@@ -34,20 +34,19 @@
       <section class="hero">
         <div class="hero-copy">
           <p class="eyebrow">Vendor-neutral control plane</p>
-          <h1>Operate terminal-native coding agents from your phone or browser.</h1>
+          <h1>Mobile control plane for coding agents.</h1>
           <p class="hero-subhead">
-            Mobile Agent Control gives you a serious remote operations layer for Gemini CLI and other coding runtimes running on your own machines.
-            Launch work, monitor progress, see machine health, and intervene fast without being locked to a single vendor UX.
+            Launch, monitor, and intervene in terminal-native coding agents running on your own machines, with Gemini CLI as the flagship integration and a vendor-neutral adapter model underneath.
           </p>
           <div class="hero-actions">
-            <a class="button primary" href="https://github.com/manishklach/mobile-agent-control">View GitHub Repo</a>
-            <a class="button secondary" href="./architecture.md">View Architecture / Features</a>
+            <a class="button primary" href="https://github.com/manishklach/mobile-agent-control">View GitHub</a>
+            <a class="button secondary" href="./architecture.md">Explore Architecture</a>
           </div>
-          <ul class="hero-points">
-            <li>Gemini CLI is the flagship integration today.</li>
-            <li>Adapter-driven runtime model for Codex, Hermes, Copilot, and more.</li>
-            <li>Built as a control plane, not just a mobile chat shell.</li>
-          </ul>
+          <div class="hero-strip">
+            <span class="inline-pill">Gemini-first depth</span>
+            <span class="inline-pill">Vendor-neutral adapters</span>
+            <span class="inline-pill">Built for intervention, not just chat</span>
+          </div>
         </div>
         <div class="hero-visual card">
           <div class="hero-visual-header">
@@ -192,6 +191,7 @@
               <span class="mock-title">Operator Dashboard</span>
               <span class="chip info">Live</span>
             </div>
+            <div class="screenshot-label">Dashboard screenshot placeholder</div>
             <div class="mock-summary">
               <div class="mock-summary-card">
                 <span>Total Connected Machines</span>
@@ -242,6 +242,10 @@
             </div>
           </div>
           <div class="dashboard-copy">
+            <div class="card dashboard-copy-card spotlight-card">
+              <h3>One surface for remote operations</h3>
+              <p>The dashboard is the first screen because it should answer the operational questions immediately: what is healthy, what is running, what is stalled, and where should the next launch go.</p>
+            </div>
             <div class="card dashboard-copy-card">
               <h3>Fleet summary</h3>
               <p>Understand total machine state, online vs offline reachability, running agents, queue pressure, and recent completions in a glance.</p>
@@ -366,6 +370,34 @@
             <h3>Cloud-routed architecture</h3>
             <p>Move from private direct reachability to a brokered control plane without rewriting the product model.</p>
           </div>
+        </div>
+      </section>
+
+      <section class="content-section">
+        <div class="section-intro">
+          <p class="eyebrow">Technical Details</p>
+          <h2>Deeper technical context stays close, but below the main product story.</h2>
+        </div>
+        <div class="feature-grid">
+          <article class="card feature-card">
+            <h3>Architecture</h3>
+            <p>Read the current control-plane layout, runtime adapter model, and transport abstraction.</p>
+            <a class="text-link" href="./architecture.md">Open architecture doc</a>
+          </article>
+          <article class="card feature-card">
+            <h3>API and setup</h3>
+            <p>Use the repo README for endpoint coverage, launch profiles, local setup, and runtime notes.</p>
+            <a class="text-link" href="https://github.com/manishklach/mobile-agent-control#readme">Open setup guide</a>
+          </article>
+          <article class="card feature-card">
+            <h3>Source and issues</h3>
+            <p>Browse the code, open issues, or track the latest changes in the public repository.</p>
+            <a class="text-link" href="https://github.com/manishklach/mobile-agent-control">Open repository</a>
+          </article>
+          <article class="card feature-card accent-card">
+            <h3>Implementation status</h3>
+            <p>Current builds use lightweight persisted supervisor state with in-memory coordination, with reliability hardening still on the roadmap.</p>
+          </article>
         </div>
       </section>
     </main>

@@ -29,7 +29,7 @@ For pre-release deployment, use Tailscale only as the private connectivity layer
 - worker pool model
 - agent model
 - job model
-- in-memory registry
+- lightweight persisted supervisor state with in-memory coordination
 - mock executor
 - CLI runtime executor with safe launch profiles
 - bearer token auth
