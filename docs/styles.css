@@ -331,6 +331,12 @@ a {
   margin-bottom: 24px;
 }
 
+.section-support {
+  margin: 14px 0 0;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
 .section-intro h2 {
   margin: 0;
   font-size: clamp(1.8rem, 3vw, 2.8rem);
@@ -339,10 +345,89 @@ a {
 }
 
 .two-column,
-.dashboard-layout {
+.dashboard-layout,
+.product-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 18px;
+}
+
+.product-copy {
+  display: grid;
+  gap: 16px;
+}
+
+.product-visual {
+  padding: 22px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.96), rgba(247,250,255,0.98)),
+    radial-gradient(circle at top left, rgba(29,78,216,0.08), transparent 16rem);
+}
+
+.product-visual-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.product-shot {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  padding: 16px;
+}
+
+.shot-summary,
+.shot-columns {
+  display: grid;
+  gap: 10px;
+}
+
+.shot-summary {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 12px;
+}
+
+.shot-summary span,
+.shot-panel {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: var(--surface-soft);
+}
+
+.shot-summary span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 62px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.shot-columns {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.shot-panel {
+  padding: 14px;
+}
+
+.shot-panel strong {
+  display: block;
+  margin-bottom: 8px;
+}
+
+.shot-panel p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.why-card {
+  background: linear-gradient(180deg, #f8fbff, #edf4ff);
 }
 
 .prose,
@@ -568,6 +653,7 @@ a {
   .hero,
   .two-column,
   .dashboard-layout,
+  .product-grid,
   .arch-flow,
   .arch-subgrid,
   .roadmap {
@@ -608,7 +694,9 @@ a {
 
   .hero-metrics,
   .mock-summary,
-  .mock-columns {
+  .mock-columns,
+  .shot-summary,
+  .shot-columns {
     grid-template-columns: 1fr;
   }
 }

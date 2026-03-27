@@ -29,7 +29,7 @@ For pre-release deployment, use Tailscale only as the private connectivity layer
 - worker pool model
 - agent model
 - job model
-- lightweight persisted supervisor state with in-memory coordination
+- SQLite-backed persisted supervisor state with in-memory live coordination
 - mock executor
 - CLI runtime executor with safe launch profiles
 - bearer token auth
@@ -49,6 +49,95 @@ Example machine base URLs for pre-release:
 
 - `http://100.x.y.z:8000`
 - `http://workstation-main.tailnet-name.ts.net:8000`
+
+## Websocket Events
+
+Connect to `ws://localhost:8000/ws` with either:
+
+- `Authorization: Bearer <token>` header, or
+- `?token=<token>` query parameter
+
+Event payloads may include:
+
+- `machine`
+- `machine_health`
+- `agent`
+- `agent_status`
+- `job`
+- `log`
+- `audit`
+- `message`
+
+Monitoring highlights:
+
+- The Android app includes a cross-machine `Running Agents` screen.
+- Machine cards surface warning counts, heartbeat, worker usage, and offline state.
+- Agent detail now shows elapsed time, last heartbeat, last log time, recent logs, recent events, and warning/stuck indicators.
+- Stuck detection is heuristic-based: running agents with no logs for a configured interval are promoted to `warning`, then `stuck`.
+
+
+Gemini-first operator features:
+
+- The Android launch flow now defaults to Gemini and can surface Gemini CLI version/auth status.
+- The web console at `/admin` is responsive for desktop Chrome, Android Chrome, and Safari/WebKit-class mobile browsers.
+- Workspace-scoped and user-scoped Gemini slash commands are listed from the real `.gemini/commands` directories.
+- MCP servers are read from Gemini settings and surfaced in machine health and launch support views.
+- Agent monitoring now includes runtime model, selected slash command, MCP usage, and last output time where available.
+
+Adapter architecture:
+
+- `CliAgentRuntimeAdapter`: vendor-neutral interface for terminal-native runtimes
+- `GeminiCliAdapter`: default example adapter and demo path
+- `HermesCliAdapter`: WSL-backed Hermes runtime adapter for Windows hosts
+- `CodexCliAdapter`: alternate real CLI adapter
+- `CopilotCliAdapter`: registered adapter placeholder for future activation
+- `CliRuntimeExecutor`: supervisor-facing executor that delegates all vendor logic to adapters
+- `cli_runtime_host.py`: generic runtime host used by all CLI adapters
+
+Workspace discovery:
+
+- Configure safe workspace roots with `AGENT_CONTROL_ALLOWED_WORKSPACE_ROOTS`
+- Optionally configure preferred picker entries with `AGENT_CONTROL_CONFIGURED_WORKSPACES`
+- The Android app now loads these from `GET /workspaces` and remembers the last-used workspace per machine
+
+## Pre-Release Deployment With Tailscale
+
+1. Install Tailscale on each machine that runs a supervisor.
+2. Install Tailscale on the Android device.
+3. Join all devices to the same tailnet.
+4. Start the FastAPI supervisor on each machine bound to the Tailscale-reachable interface or `0.0.0.0`.
+5. Confirm each supervisor is reachable from another tailnet device using its Tailscale IP or MagicDNS hostname.
+6. In the Android app, register each machine using its private Tailscale base URL and the matching application bearer token.
+7. Keep any firewall rules restricted to the tailnet/private network context; do not publish the service to the public internet.
+
+## Later Migration To Cloud Control Plane
+
+The current Android app should conceptually target a logical supervisor API, not “direct machine access” as a permanent product assumption.
+
+Planned migration path:
+
+1. Keep machine supervisors as local orchestration agents on each machine.
+2. Introduce a cloud control-plane API that authenticates the mobile client.
+3. Have the cloud API route or broker commands to machine supervisors.
+4. Preserve the same high-level resource model in the client:
+   - machine
+   - agent
+   - task/job
+   - logs/events
+5. Replace stored direct machine URLs with cloud-routed endpoint references or machine IDs.
+6. Keep application-level auth and authorization independent from the transport layer.
+
+## Notes
+
+- `cli_runtime_executor.py` launches only configured safe profiles from `backend/config/launch_profiles.json`.
+- Worker scaling and pause/resume semantics are intentionally deferred.
+- Recent agents, tasks, audit entries, and supervisor state snapshots are persisted locally to `backend/data/supervisor_state.db`.
+- Live scheduling, process coordination, and websocket state still operate in memory at runtime.
+- The state store uses SQLite by default and will migrate a legacy `supervisor_state.json` snapshot if present.
+- Tailscale is a temporary pre-release transport layer only.
+- `gemini-safe-default` is the default sample runtime and uses `GeminiCliAdapter`.
+- `codex-safe-default` uses the same adapter architecture via `CodexCliAdapter`.
+- Vendor-specific auth and CLI detection now live in adapter modules instead of shared supervisor code paths.
 
 ## Backend Structure
 
@@ -116,11 +205,17 @@ backend/
 
 ## Example Requests
 
+Use these portable example values:
+
+- supervisor base URL: `http://supervisor.internal.example:8000`
+- bearer token: `mac-demo-token-7f4c1d3a`
+- workspace path: `/workspace/project-repo`
+
 Start a mock Gemini agent:
 
 ```powershell
-curl -X POST http://localhost:8000/agents/start `
-  -H "Authorization: Bearer replace-with-a-random-token" `
+curl -X POST http://supervisor.internal.example:8000/agents/start `
+  -H "Authorization: Bearer mac-demo-token-7f4c1d3a" `
   -H "Content-Type: application/json" `
   -d "{\"type\":\"gemini\",\"initial_task\":\"Boot a coding agent for repo triage\"}"
 ```
@@ -128,56 +223,56 @@ curl -X POST http://localhost:8000/agents/start `
 Launch a supervised local Gemini process with the real Gemini CLI adapter:
 
 ```powershell
-curl -X POST http://localhost:8000/agents/launch `
-  -H "Authorization: Bearer 0118" `
+curl -X POST http://supervisor.internal.example:8000/agents/launch `
+  -H "Authorization: Bearer mac-demo-token-7f4c1d3a" `
   -H "Content-Type: application/json" `
-  -d "{\"type\":\"gemini\",\"launch_profile\":\"gemini-safe-default\",\"workspace\":\"C:\\Users\\ManishKL\\Documents\\Playground\",\"initial_prompt\":\"Summarize the repo and confirm the control plane is connected\"}"
+  -d "{\"type\":\"gemini\",\"launch_profile\":\"gemini-safe-default\",\"workspace\":\"/workspace/project-repo\",\"initial_prompt\":\"Summarize the repo and confirm the control plane is connected\"}"
 ```
 
 Inspect Gemini runtime status and capabilities:
 
 ```powershell
-curl -X GET http://localhost:8000/runtime/adapters/gemini-cli `
-  -H "Authorization: Bearer 0118"
+curl -X GET http://supervisor.internal.example:8000/runtime/adapters/gemini-cli `
+  -H "Authorization: Bearer mac-demo-token-7f4c1d3a"
 ```
 
 List Gemini slash commands for a workspace:
 
 ```powershell
-curl -X GET "http://localhost:8000/runtime/adapters/gemini-cli/commands?workspace=C:\Users\ManishKL\Documents\Playground" `
-  -H "Authorization: Bearer 0118"
+curl -X GET "http://supervisor.internal.example:8000/runtime/adapters/gemini-cli/commands?workspace=/workspace/project-repo" `
+  -H "Authorization: Bearer mac-demo-token-7f4c1d3a"
 ```
 
 Inspect machine MCP visibility:
 
 ```powershell
-curl -X GET "http://localhost:8000/machines/machine-self/mcp?workspace=C:\Users\ManishKL\Documents\Playground" `
-  -H "Authorization: Bearer 0118"
+curl -X GET "http://supervisor.internal.example:8000/machines/machine-self/mcp?workspace=/workspace/project-repo" `
+  -H "Authorization: Bearer mac-demo-token-7f4c1d3a"
 ```
 
 Launch a supervised local Codex process with the Codex CLI adapter:
 
 ```powershell
-curl -X POST http://localhost:8000/agents/launch `
-  -H "Authorization: Bearer 0118" `
+curl -X POST http://supervisor.internal.example:8000/agents/launch `
+  -H "Authorization: Bearer mac-demo-token-7f4c1d3a" `
   -H "Content-Type: application/json" `
-  -d "{\"type\":\"codex\",\"launch_profile\":\"codex-safe-default\",\"workspace\":\"C:\\Users\\ManishKL\\Documents\\Playground\",\"initial_prompt\":\"Print startup status\"}"
+  -d "{\"type\":\"codex\",\"launch_profile\":\"codex-safe-default\",\"workspace\":\"/workspace/project-repo\",\"initial_prompt\":\"Print startup status\"}"
 ```
 
 Launch a supervised Hermes Agent process through WSL:
 
 ```powershell
-curl -X POST http://localhost:8000/agents/launch `
-  -H "Authorization: Bearer 0118" `
+curl -X POST http://supervisor.internal.example:8000/agents/launch `
+  -H "Authorization: Bearer mac-demo-token-7f4c1d3a" `
   -H "Content-Type: application/json" `
-  -d "{\"type\":\"hermes\",\"launch_profile\":\"hermes-safe-default\",\"workspace\":\"C:\\Users\\ManishKL\\Documents\\Playground\",\"initial_prompt\":\"Summarize this repository\"}"
+  -d "{\"type\":\"hermes\",\"launch_profile\":\"hermes-safe-default\",\"workspace\":\"/workspace/project-repo\",\"initial_prompt\":\"Summarize this repository\"}"
 ```
 
 Submit a task:
 
 ```powershell
-curl -X POST http://localhost:8000/agents/<agent-id>/tasks `
-  -H "Authorization: Bearer replace-with-a-random-token" `
+curl -X POST http://supervisor.internal.example:8000/agents/<agent-id>/tasks `
+  -H "Authorization: Bearer mac-demo-token-7f4c1d3a" `
   -H "Content-Type: application/json" `
   -d "{\"input_text\":\"Summarize repository status\",\"kind\":\"task\"}"
 ```
@@ -185,8 +280,8 @@ curl -X POST http://localhost:8000/agents/<agent-id>/tasks `
 Send a prompt:
 
 ```powershell
-curl -X POST http://localhost:8000/agents/<agent-id>/prompt `
-  -H "Authorization: Bearer replace-with-a-random-token" `
+curl -X POST http://supervisor.internal.example:8000/agents/<agent-id>/prompt `
+  -H "Authorization: Bearer mac-demo-token-7f4c1d3a" `
   -H "Content-Type: application/json" `
   -d "{\"prompt\":\"Focus on open issues first\"}"
 ```
@@ -194,36 +289,11 @@ curl -X POST http://localhost:8000/agents/<agent-id>/prompt `
 Restart an agent:
 
 ```powershell
-curl -X POST http://localhost:8000/agents/<agent-id>/restart `
-  -H "Authorization: Bearer replace-with-a-random-token" `
+curl -X POST http://supervisor.internal.example:8000/agents/<agent-id>/restart `
+  -H "Authorization: Bearer mac-demo-token-7f4c1d3a" `
   -H "Content-Type: application/json" `
   -d "{\"reason\":\"Apply new control directive\"}"
 ```
-
-## Websocket Events
-
-Connect to `ws://localhost:8000/ws` with either:
-
-- `Authorization: Bearer <token>` header, or
-- `?token=<token>` query parameter
-
-Event payloads may include:
-
-- `machine`
-- `machine_health`
-- `agent`
-- `agent_status`
-- `job`
-- `log`
-- `audit`
-- `message`
-
-Monitoring highlights:
-
-- The Android app includes a cross-machine `Running Agents` screen.
-- Machine cards surface warning counts, heartbeat, worker usage, and offline state.
-- Agent detail now shows elapsed time, last heartbeat, last log time, recent logs, recent events, and warning/stuck indicators.
-- Stuck detection is heuristic-based: running agents with no logs for a configured interval are promoted to `warning`, then `stuck`.
 
 ## Local Run
 
@@ -236,7 +306,7 @@ Copy-Item .env.example .env
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Launch profiles are loaded from `backend/config/launch_profiles.json`. The Codex profile is wired to a real local runner process. The phone never sends arbitrary shell commands.
+Launch profiles are loaded from `backend/config/launch_profiles.json`. The phone never sends arbitrary shell commands.
 
 Gemini setup on the machine:
 
@@ -261,69 +331,6 @@ wsl.exe --cd /tmp hermes chat -q "Reply with exactly: hello from hermes"
 ```
 
 Once that succeeds in WSL, the supervisor can launch Hermes through `hermes-safe-default`.
-
-Gemini-first operator features:
-
-- The Android launch flow now defaults to Gemini and can surface Gemini CLI version/auth status.
-- The web console at `/admin` is responsive for desktop Chrome, Android Chrome, and Safari/WebKit-class mobile browsers.
-- Workspace-scoped and user-scoped Gemini slash commands are listed from the real `.gemini/commands` directories.
-- MCP servers are read from Gemini settings and surfaced in machine health and launch support views.
-- Agent monitoring now includes runtime model, selected slash command, MCP usage, and last output time where available.
-
-Adapter architecture:
-
-- `CliAgentRuntimeAdapter`: vendor-neutral interface for terminal-native runtimes
-- `GeminiCliAdapter`: default example adapter and demo path
-- `HermesCliAdapter`: WSL-backed Hermes runtime adapter for Windows hosts
-- `CodexCliAdapter`: alternate real CLI adapter
-- `CopilotCliAdapter`: registered adapter placeholder for future activation
-- `CliRuntimeExecutor`: supervisor-facing executor that delegates all vendor logic to adapters
-- `cli_runtime_host.py`: generic runtime host used by all CLI adapters
-
-Workspace discovery:
-
-- Configure safe workspace roots with `AGENT_CONTROL_ALLOWED_WORKSPACE_ROOTS`
-- Optionally configure preferred picker entries with `AGENT_CONTROL_CONFIGURED_WORKSPACES`
-- The Android app now loads these from `GET /workspaces` and remembers the last-used workspace per machine
-
-## Pre-Release Deployment With Tailscale
-
-1. Install Tailscale on each machine that runs a supervisor.
-2. Install Tailscale on the Android device.
-3. Join all devices to the same tailnet.
-4. Start the FastAPI supervisor on each machine bound to the Tailscale-reachable interface or `0.0.0.0`.
-5. Confirm each supervisor is reachable from another tailnet device using its Tailscale IP or MagicDNS hostname.
-6. In the Android app, register each machine using its private Tailscale base URL and the matching application bearer token.
-7. Keep any firewall rules restricted to the tailnet/private network context; do not publish the service to the public internet.
-
-## Later Migration To Cloud Control Plane
-
-The current Android app should conceptually target a logical supervisor API, not “direct machine access” as a permanent product assumption.
-
-Planned migration path:
-
-1. Keep machine supervisors as local orchestration agents on each machine.
-2. Introduce a cloud control-plane API that authenticates the mobile client.
-3. Have the cloud API route or broker commands to machine supervisors.
-4. Preserve the same high-level resource model in the client:
-   - machine
-   - agent
-   - task/job
-   - logs/events
-5. Replace stored direct machine URLs with cloud-routed endpoint references or machine IDs.
-6. Keep application-level auth and authorization independent from the transport layer.
-
-## Notes
-
-- `cli_runtime_executor.py` launches only configured safe profiles from `backend/config/launch_profiles.json`.
-- Worker scaling and pause/resume semantics are intentionally deferred.
-- All state is in memory and resets on restart.
-- Recent agents, tasks, and audit entries are now persisted locally to `backend/data/supervisor_state.db`.
-- The state store uses SQLite by default and will migrate a legacy `supervisor_state.json` snapshot if present.
-- Tailscale is a temporary pre-release transport layer only.
-- `gemini-safe-default` is the default sample runtime and uses `GeminiCliAdapter`.
-- `codex-safe-default` uses the same adapter architecture via `CodexCliAdapter`.
-- Vendor-specific auth and CLI detection now live in adapter modules instead of shared supervisor code paths.
 
 ## Automated Backend Tests
 

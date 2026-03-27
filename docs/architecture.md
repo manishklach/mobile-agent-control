@@ -86,7 +86,7 @@
 ### Phase 1
 
 - FastAPI supervisor only
-- in-memory machine, worker, agent, and job registry
+- initial in-memory machine, worker, agent, and job registry
 - mock executor only
 - lifecycle endpoints and websocket events
 - bearer token auth

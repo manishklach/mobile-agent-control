@@ -101,6 +101,64 @@
         </div>
       </section>
 
+      <section class="content-section product-section">
+        <div class="section-intro">
+          <p class="eyebrow">Product at a Glance</p>
+          <h2>A cleaner operator surface for launch, monitoring, and intervention.</h2>
+          <p class="section-support">
+            Mobile Agent Control exists because coding agents are no longer a single-terminal activity. Once work spreads across machines and runtimes, you need a control layer that stays fast, honest, and operational.
+          </p>
+        </div>
+        <div class="product-grid">
+          <div class="card product-visual">
+            <div class="product-visual-top">
+              <span class="screenshot-label">Dashboard screenshot placeholder</span>
+              <span class="chip info">Operator Home</span>
+            </div>
+            <div class="product-shot">
+              <div class="shot-summary">
+                <span>Fleet Summary</span>
+                <span>Running Now</span>
+                <span>Machine Health</span>
+                <span>Recent Activity</span>
+              </div>
+              <div class="shot-columns">
+                <div class="shot-panel">
+                  <strong>Launch</strong>
+                  <p>Start a new agent on the right machine with a safe workspace and launch profile.</p>
+                </div>
+                <div class="shot-panel">
+                  <strong>Monitor</strong>
+                  <p>Watch state, heartbeat, last output, and machine health in one place.</p>
+                </div>
+                <div class="shot-panel">
+                  <strong>Intervene</strong>
+                  <p>Restart, stop, retry, or prompt agents as soon as the situation changes.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="product-copy">
+            <article class="card feature-card">
+              <h3>Launch</h3>
+              <p>Start supervised agent processes remotely using approved launch profiles, runtime-aware options, and safe workspace selection.</p>
+            </article>
+            <article class="card feature-card">
+              <h3>Monitor</h3>
+              <p>Track active runs through fleet summary, running agents, machine health, logs, and recent activity instead of polling terminals manually.</p>
+            </article>
+            <article class="card feature-card">
+              <h3>Intervene</h3>
+              <p>Stop, restart, retry, and send prompts quickly when long-running work stalls, fails, or needs steering.</p>
+            </article>
+            <article class="card why-card">
+              <h3>Why this exists</h3>
+              <p>Vendor CLIs are strong local tools, but they do not give you a unified mobile control surface for multiple machines, long-running jobs, and runtime-neutral operations.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
       <section id="what" class="content-section">
         <div class="section-intro">
           <p class="eyebrow">What It Is</p>
@@ -217,7 +275,7 @@
                   <span class="chip good">running</span>
                   <div>
                     <strong>Gemini Local CLI</strong>
-                    <p>workspace: Playground</p>
+                    <p>workspace: project-repo</p>
                   </div>
                 </div>
                 <div class="mock-row">
@@ -396,7 +454,7 @@
           </article>
           <article class="card feature-card accent-card">
             <h3>Implementation status</h3>
-            <p>Current builds use lightweight persisted supervisor state with in-memory coordination, with reliability hardening still on the roadmap.</p>
+            <p>Current builds persist recent supervisor state in SQLite while live scheduling and coordination remain in memory, with recovery hardening still on the roadmap.</p>
           </article>
         </div>
       </section>
