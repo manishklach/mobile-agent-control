@@ -12,6 +12,7 @@ from app.models import (
     AgentRecord,
     AgentState,
     AgentType,
+    AuditStatus,
     JobKind,
     JobRecord,
     JobState,
@@ -57,9 +58,21 @@ def make_manager(state_path: Path, **setting_overrides: object) -> AgentManager:
 
 
 class AgentManagerLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self._managers: list[AgentManager] = []
+
+    async def asyncTearDown(self) -> None:
+        for manager in self._managers:
+            await manager.stop_background_tasks()
+
+    def _manager(self, state_path: Path, **setting_overrides: object) -> AgentManager:
+        manager = make_manager(state_path, **setting_overrides)
+        self._managers.append(manager)
+        return manager
+
     async def test_start_agent_becomes_idle(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            manager = make_manager(Path(tmp_dir) / "state.db")
+            manager = self._manager(Path(tmp_dir) / "state.db")
 
             response = await manager.start_agent(StartAgentRequest(type=AgentType.GEMINI, initial_task="boot"))
             self.assertEqual(response.agent.state, AgentState.STARTING)
@@ -75,7 +88,7 @@ class AgentManagerLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_pending_agent_can_be_cancelled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            manager = make_manager(Path(tmp_dir) / "state.db", mock_worker_capacity=0)
+            manager = self._manager(Path(tmp_dir) / "state.db", mock_worker_capacity=0)
 
             response = await manager.start_agent(StartAgentRequest(type=AgentType.GEMINI, initial_task="queued"))
             self.assertEqual(response.agent.state, AgentState.PENDING)
@@ -90,7 +103,7 @@ class AgentManagerLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_mock_prompt_completes_and_returns_idle(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            manager = make_manager(Path(tmp_dir) / "state.db")
+            manager = self._manager(Path(tmp_dir) / "state.db")
 
             response = await manager.start_agent(StartAgentRequest(type=AgentType.GEMINI, initial_task="boot"))
             await asyncio.sleep(0.7)
@@ -150,7 +163,7 @@ class AgentManagerLifecycleTests(unittest.IsolatedAsyncioTestCase):
             )
             StateStore(state_path).save(persisted)
 
-            restored = make_manager(state_path)
+            restored = self._manager(state_path)
             detail = await restored.get_agent("agent-1")
             task = await restored.get_task("job-1")
 
@@ -158,6 +171,49 @@ class AgentManagerLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(detail.agent.worker_id)
             self.assertEqual(task.task.state, JobState.FAILED)
             self.assertIn("Interrupted by supervisor restart", task.task.summary)
+
+    async def test_second_agent_stays_pending_when_worker_capacity_is_full(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = self._manager(Path(tmp_dir) / "state.db", max_active_agents=4, mock_worker_capacity=1)
+
+            first = await manager.start_agent(StartAgentRequest(type=AgentType.GEMINI, initial_task="boot-1"))
+            await asyncio.sleep(0.7)
+            first_detail = await manager.get_agent(first.agent.id)
+            self.assertEqual(first_detail.agent.state, AgentState.IDLE)
+
+            second = await manager.start_agent(StartAgentRequest(type=AgentType.GEMINI, initial_task="boot-2"))
+            second_detail = await manager.get_agent(second.agent.id)
+            refreshed_first = await manager.get_agent(first.agent.id)
+
+            self.assertEqual(second_detail.agent.state, AgentState.PENDING)
+            self.assertEqual(refreshed_first.agent.state, AgentState.IDLE)
+
+    async def test_clear_terminated_agents_removes_stopped_and_failed_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = self._manager(Path(tmp_dir) / "state.db")
+
+            stopped = await manager.start_agent(StartAgentRequest(type=AgentType.GEMINI, initial_task="boot"))
+            await asyncio.sleep(0.7)
+            await manager.stop_agent(stopped.agent.id)
+
+            failed_id = "failed-agent"
+            now = datetime.now(UTC)
+            manager._agents[failed_id] = AgentRecord(
+                id=failed_id,
+                type=AgentType.GEMINI,
+                state=AgentState.FAILED,
+                updated_at=now,
+            )
+
+            active = await manager.start_agent(StartAgentRequest(type=AgentType.GEMINI, initial_task="active"))
+            await asyncio.sleep(0.1)
+
+            await manager.clear_terminated_agents()
+
+            self.assertNotIn(stopped.agent.id, manager._agents)
+            self.assertNotIn(failed_id, manager._agents)
+            self.assertIn(active.agent.id, manager._agents)
+            self.assertEqual(manager._audits[-1].status, AuditStatus.ACCEPTED)
 
 
 if __name__ == "__main__":

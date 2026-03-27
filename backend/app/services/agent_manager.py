@@ -307,10 +307,10 @@ class AgentManager:
     async def start_agent(self, request: StartAgentRequest) -> AgentDetailResponse:
         agent_id = str(uuid4())
         try:
-            self._enforce_capacity()
             now = datetime.now(UTC)
             
             async with self._lock:
+                self._enforce_capacity()
                 startup_job = self._create_job(agent_id=agent_id, kind=JobKind.STARTUP, input_text=request.initial_task or "start agent")
                 agent = AgentRecord(
                     id=agent_id,
@@ -359,8 +359,6 @@ class AgentManager:
     async def launch_agent(self, request: LaunchAgentRequest) -> AgentDetailResponse:
         agent_id = str(uuid4())
         try:
-            # We don't take the lock here because _schedule_pending_agents will
-            self._enforce_capacity()
             profile = self.launch_profiles.get(request.launch_profile)
             if profile is None:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown launch profile")
@@ -374,8 +372,8 @@ class AgentManager:
             )
 
             now = datetime.now(UTC)
-            # Accessing shared state, we might need a small lock for just these or rely on _schedule
             async with self._lock:
+                self._enforce_capacity()
                 startup_job = self._create_job(agent_id=agent_id, kind=JobKind.STARTUP, input_text=request.initial_prompt or "launch agent")
                 metadata = self._build_launch_metadata(
                     request.type,
@@ -662,37 +660,7 @@ class AgentManager:
         async with self._lock:
             while self._pending_queue:
                 if not self._has_available_worker_slot():
-                    # Attempt to evict an IDLE agent to make room
-                    idle_agents = [
-                        a for a in self._agents.values()
-                        if a.state == AgentState.IDLE and a.worker_id
-                    ]
-                    if idle_agents:
-                        # Sort by last output (oldest first) or updated_at
-                        idle_agents.sort(key=lambda x: x.last_output_at or x.updated_at or datetime.min.replace(tzinfo=UTC))
-                        to_evict = idle_agents[0]
-                        
-                        # We stop the agent internally while holding the lock
-                        to_evict.state = AgentState.STOPPED
-                        to_evict.updated_at = datetime.now(UTC)
-                        to_evict.worker_id = None
-                        if to_evict.current_job_id:
-                            self._complete_job(to_evict.current_job_id, JobState.CANCELLED, "Evicted to make room")
-                        
-                        handle = self._handles.pop(to_evict.id, None)
-                        if handle:
-                            try:
-                                # Start new session task to stop process to avoid holding lock during I/O
-                                asyncio.create_task(self.runtime_executor.stop(handle))
-                            except Exception:
-                                pass
-                        
-                        await self._publish("agent.stopped", agent=to_evict, message="Evicted to make room")
-                        # Loop will check capacity again
-                        continue
-                    else:
-                        # No slots and no idle agents to evict
-                        break
+                    break
 
                 agent_id = self._pending_queue.popleft()
                 agent = self._agents.get(agent_id)
@@ -1026,14 +994,12 @@ class AgentManager:
                 self._agent_event_history.pop(agent.id, None)
 
     def _has_available_worker_slot(self) -> bool:
-        # A slot is available if we haven't reached capacity,
-        # OR if we have IDLE agents that can be evicted.
-        busy_non_idle = sum(
+        busy_agents = sum(
             1
             for agent in self._agents.values()
-            if agent.worker_id and agent.state in {AgentState.STARTING, AgentState.RUNNING, AgentState.STOPPING}
+            if agent.worker_id and agent.state in {AgentState.STARTING, AgentState.RUNNING, AgentState.IDLE, AgentState.STOPPING}
         )
-        return busy_non_idle < self.settings.mock_worker_capacity
+        return busy_agents < self.settings.mock_worker_capacity
 
     def _build_launch_metadata(
         self,
@@ -1663,7 +1629,7 @@ class AgentManager:
         async with self._lock:
             to_remove = [
                 agent_id for agent_id, agent in self._agents.items()
-                if agent.state in {AgentState.FAILED, AgentState.STOPPED, AgentState.COMPLETED}
+                if agent.state in {AgentState.FAILED, AgentState.STOPPED}
             ]
             for agent_id in to_remove:
                 self._agents.pop(agent_id, None)
