@@ -49,6 +49,9 @@ import com.example.agentcontrol.data.model.DashboardAgentCard
 import com.example.agentcontrol.data.model.AgentDetailResponse
 import com.example.agentcontrol.data.model.AgentRecord
 import com.example.agentcontrol.data.model.AgentRuntimeStatus
+import com.example.agentcontrol.data.model.AgentStateSnapshot
+import com.example.agentcontrol.data.model.AgentEvent
+import com.example.agentcontrol.data.model.ApprovalRequest
 import com.example.agentcontrol.data.model.AuditEntry
 import com.example.agentcontrol.data.model.DashboardActivityItem
 import com.example.agentcontrol.data.model.DashboardMachineHealthCard
@@ -59,6 +62,7 @@ import com.example.agentcontrol.data.model.LaunchSupport
 import com.example.agentcontrol.data.model.LaunchProfileRecord
 import com.example.agentcontrol.data.model.MachineOverview
 import com.example.agentcontrol.data.model.MachineSelfResponse
+import com.example.agentcontrol.data.model.OrchestrationTask
 import com.example.agentcontrol.data.model.RunningAgentOverview
 import com.example.agentcontrol.data.model.SupervisorEvent
 import com.example.agentcontrol.data.model.WorkspaceRecord
@@ -855,10 +859,21 @@ fun LaunchAgentScreen(
 @Composable
 fun MachineActivityScreen(
     tasksState: UiState<List<JobRecord>>,
+    workflowTasksState: UiState<List<OrchestrationTask>>,
+    approvalsState: UiState<List<ApprovalRequest>>,
     auditState: UiState<List<AuditEntry>>,
     onBack: () -> Unit,
-    onRefresh: () -> Unit
+    onRefresh: () -> Unit,
+    onOpenAgent: (String) -> Unit,
+    onApprove: (String) -> Unit,
+    onReject: (String) -> Unit,
+    onCreateTask: (String, String, String?, List<String>) -> Unit
 ) {
+    var workflowName by rememberSaveable { mutableStateOf("") }
+    var workflowPrompt by rememberSaveable { mutableStateOf("") }
+    var workflowAgentId by rememberSaveable { mutableStateOf("") }
+    var workflowDependencies by rememberSaveable { mutableStateOf("") }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -872,6 +887,56 @@ fun MachineActivityScreen(
             modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            item { Text("Approval Inbox", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold) }
+            when (approvalsState) {
+                UiState.Loading -> item { LoadingState("Loading approvals…") }
+                is UiState.Error -> item { ErrorState(approvalsState.message, onRefresh) }
+                is UiState.Success -> {
+                    if (approvalsState.data.isEmpty()) item { EmptyState("No pending or resolved approvals yet.") } else items(approvalsState.data.take(20)) { approval ->
+                        ApprovalCard(approval = approval, onOpenAgent = onOpenAgent, onApprove = onApprove, onReject = onReject)
+                    }
+                }
+            }
+            item { HorizontalDivider() }
+            item { Text("Workflow Tasks", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold) }
+            item {
+                Card {
+                    Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Create Task", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        OutlinedTextField(value = workflowName, onValueChange = { workflowName = it }, label = { Text("Task name") }, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = workflowPrompt, onValueChange = { workflowPrompt = it }, label = { Text("Prompt template") }, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = workflowAgentId, onValueChange = { workflowAgentId = it }, label = { Text("Assigned agent ID (optional)") }, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = workflowDependencies, onValueChange = { workflowDependencies = it }, label = { Text("Dependencies (comma-separated task IDs)") }, modifier = Modifier.fillMaxWidth())
+                        Button(
+                            onClick = {
+                                onCreateTask(
+                                    workflowName.trim(),
+                                    workflowPrompt.trim(),
+                                    workflowAgentId.trim().ifBlank { null },
+                                    workflowDependencies.split(",").mapNotNull { it.trim().takeIf(String::isNotBlank) }
+                                )
+                                workflowName = ""
+                                workflowPrompt = ""
+                                workflowAgentId = ""
+                                workflowDependencies = ""
+                            },
+                            enabled = workflowName.isNotBlank() && workflowPrompt.isNotBlank()
+                        ) {
+                            Text("Create Workflow Task")
+                        }
+                    }
+                }
+            }
+            when (workflowTasksState) {
+                UiState.Loading -> item { LoadingState("Loading workflow tasks…") }
+                is UiState.Error -> item { ErrorState(workflowTasksState.message, onRefresh) }
+                is UiState.Success -> {
+                    if (workflowTasksState.data.isEmpty()) item { EmptyState("No workflow tasks yet.") } else items(workflowTasksState.data.take(20)) { task ->
+                        WorkflowTaskCard(task = task, onOpenAgent = onOpenAgent)
+                    }
+                }
+            }
+            item { HorizontalDivider() }
             item { Text("Task History", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold) }
             when (tasksState) {
                 UiState.Loading -> item { LoadingState("Loading task history…") }
@@ -942,8 +1007,10 @@ fun RunningAgentsScreen(
 @Composable
 fun AgentDetailScreen(
     state: UiState<AgentDetailResponse>,
+    structuredState: UiState<AgentStateSnapshot>,
     metricsState: UiState<AgentRuntimeStatus>,
     eventsState: UiState<List<SupervisorEvent>>,
+    timelineState: UiState<List<AgentEvent>>,
     liveEvents: List<SupervisorEvent>,
     actionError: String?,
     actionMessage: String?,
@@ -952,10 +1019,12 @@ fun AgentDetailScreen(
     onRefresh: () -> Unit,
     onStop: () -> Unit,
     onRestart: (String?) -> Unit,
-    onPrompt: (String) -> Unit
+    onPrompt: (String) -> Unit,
+    onReplay: (String?) -> Unit
 ) {
     var prompt by remember { mutableStateOf("") }
     var restartReason by remember { mutableStateOf("") }
+    var replayInstruction by remember { mutableStateOf("") }
 
     Scaffold(
         topBar = {
@@ -973,7 +1042,9 @@ fun AgentDetailScreen(
                 val agent = state.data.agent
                 val latestCompletedJob = state.data.latestCompletedJob
                 val metrics = (metricsState as? UiState.Success)?.data
+                val stateSnapshot = (structuredState as? UiState.Success)?.data
                 val recentEvents = (eventsState as? UiState.Success)?.data ?: liveEvents
+                val timeline = (timelineState as? UiState.Success)?.data.orEmpty()
                 LazyColumn(
                     modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -1046,6 +1117,29 @@ fun AgentDetailScreen(
                             }
                         }
                     }
+                    item {
+                        Card {
+                            Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("Structured State", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                                when (structuredState) {
+                                    UiState.Loading -> Text("Loading current state…")
+                                    is UiState.Error -> Text(structuredState.message, color = MaterialTheme.colorScheme.error)
+                                    is UiState.Success -> {
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            StateBadge(stateSnapshot?.currentState ?: agent.currentState)
+                                            MetricPill("Progress", "${stateSnapshot?.progress ?: agent.progress}%")
+                                        }
+                                        Text("Step: ${stateSnapshot?.currentStep ?: agent.currentStep}")
+                                        Text("Last updated: ${stateSnapshot?.lastUpdatedTs ?: agent.lastUpdatedTs ?: "-"}")
+                                        val failureReason = stateSnapshot?.errorMessage ?: agent.errorMessage
+                                        if (!failureReason.isNullOrBlank()) {
+                                            Text("Issue: $failureReason", color = MaterialTheme.colorScheme.error)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     latestCompletedJob?.let { job ->
                         item {
                             Card(colors = CardDefaults.cardColors(containerColor = resultContainer(job.state))) {
@@ -1082,6 +1176,13 @@ fun AgentDetailScreen(
                                     modifier = Modifier.fillMaxWidth()
                                 )
                                 Button(onClick = { onPrompt(prompt); prompt = "" }, enabled = prompt.isNotBlank()) { Text("Send Prompt") }
+                                OutlinedTextField(
+                                    value = replayInstruction,
+                                    onValueChange = { replayInstruction = it },
+                                    label = { Text("Replay with fix") },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Button(onClick = { onReplay(replayInstruction.ifBlank { null }); replayInstruction = "" }) { Text("Replay") }
                             }
                         }
                     }
@@ -1131,8 +1232,113 @@ fun AgentDetailScreen(
                             }
                         }
                     }
+                    item { Text("Timeline", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold) }
+                    when (timelineState) {
+                        UiState.Loading -> item { LoadingState("Loading timeline…") }
+                        is UiState.Error -> item { ErrorState(timelineState.message, onRefresh) }
+                        is UiState.Success -> {
+                            if (timeline.isEmpty()) {
+                                item { EmptyState("No timeline events yet.") }
+                            } else {
+                                items(timeline.take(30)) { event ->
+                                    TimelineEventCard(event)
+                                }
+                            }
+                        }
+                    }
                     item { Spacer(modifier = Modifier.height(24.dp)) }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ApprovalCard(
+    approval: ApprovalRequest,
+    onOpenAgent: (String) -> Unit,
+    onApprove: (String) -> Unit,
+    onReject: (String) -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(approval.actionType, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Text(approval.createdAt, style = MaterialTheme.typography.bodySmall)
+                }
+                StateBadge(approval.status)
+            }
+            Text("Agent: ${approval.agentId}", style = MaterialTheme.typography.bodySmall)
+            if (approval.payload.isNotEmpty()) {
+                Text(approval.payload.toString(), style = MaterialTheme.typography.bodySmall)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = { onOpenAgent(approval.agentId) }) { Text("Open Agent") }
+                if (approval.status.equals("PENDING", true)) {
+                    Button(onClick = { onApprove(approval.id) }) { Text("Approve") }
+                    Button(onClick = { onReject(approval.id) }) { Text("Reject") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WorkflowTaskCard(
+    task: OrchestrationTask,
+    onOpenAgent: (String) -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(task.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Text(task.id, style = MaterialTheme.typography.bodySmall)
+                }
+                StateBadge(task.status)
+            }
+            Text("Prompt: ${task.promptTemplate}")
+            Text("Assigned agent: ${task.assignedAgent ?: "-"}")
+            if (task.dependencies.isNotEmpty()) {
+                Text("Depends on: ${task.dependencies.joinToString(" -> ")}", style = MaterialTheme.typography.bodySmall)
+            }
+            task.summary?.let { Text("Summary: $it", style = MaterialTheme.typography.bodySmall) }
+            task.errorMessage?.let { Text("Issue: $it", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+            task.assignedAgent?.let { assignedAgent ->
+                TextButton(onClick = { onOpenAgent(assignedAgent) }) { Text("Open Agent") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TimelineEventCard(event: AgentEvent) {
+    var expanded by rememberSaveable(event.eventId) { mutableStateOf(false) }
+    val icon = when (event.type.uppercase()) {
+        "STATE_CHANGE" -> "•"
+        "TOOL_CALL" -> "◦"
+        "FILE_EDIT" -> "+"
+        "ERROR" -> "!"
+        else -> ">"
+    }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded }
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(icon, fontWeight = FontWeight.Bold)
+                Text(event.type, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(event.timestamp, style = MaterialTheme.typography.bodySmall)
+            }
+            if (expanded) {
+                Text(event.payload.toString(), style = MaterialTheme.typography.bodySmall)
+            } else {
+                Text(event.payload.toString().take(180), style = MaterialTheme.typography.bodySmall)
             }
         }
     }

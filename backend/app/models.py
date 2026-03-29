@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
@@ -13,7 +13,7 @@ class AgentType(str, Enum):
     HERMES = "hermes"
 
 
-class AgentState(str, Enum):
+class SupervisorAgentState(str, Enum):
     PENDING = "pending"
     STARTING = "starting"
     RUNNING = "running"
@@ -21,6 +21,15 @@ class AgentState(str, Enum):
     STOPPING = "stopping"
     STOPPED = "stopped"
     FAILED = "failed"
+
+
+class AgentState(str, Enum):
+    IDLE = "IDLE"
+    RUNNING = "RUNNING"
+    WAITING_FOR_APPROVAL = "WAITING_FOR_APPROVAL"
+    BLOCKED = "BLOCKED"
+    FAILED = "FAILED"
+    COMPLETED = "COMPLETED"
 
 
 class JobKind(str, Enum):
@@ -43,6 +52,35 @@ class AuditStatus(str, Enum):
     ACCEPTED = "accepted"
     REJECTED = "rejected"
     COMPLETED = "completed"
+
+
+class EventType(str, Enum):
+    STATE_CHANGE = "STATE_CHANGE"
+    TOOL_CALL = "TOOL_CALL"
+    FILE_EDIT = "FILE_EDIT"
+    ERROR = "ERROR"
+    USER_ACTION = "USER_ACTION"
+
+
+class ApprovalActionType(str, Enum):
+    RUN_COMMAND = "RUN_COMMAND"
+    WRITE_FILE = "WRITE_FILE"
+    DELETE_FILE = "DELETE_FILE"
+    NETWORK_CALL = "NETWORK_CALL"
+
+
+class ApprovalStatus(str, Enum):
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+
+class TaskStatus(str, Enum):
+    PENDING = "pending"
+    BLOCKED = "blocked"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 
 class LogEntry(BaseModel):
@@ -161,6 +199,16 @@ class WorkspaceRecord(BaseModel):
     source: str
 
 
+class AgentStateSnapshot(BaseModel):
+    agent_id: str
+    name: str
+    current_state: AgentState
+    progress: int = Field(default=0, ge=0, le=100)
+    current_step: str = "Idle"
+    last_updated_ts: datetime
+    error_message: str | None = None
+
+
 class JobRecord(BaseModel):
     id: str
     agent_id: str
@@ -177,8 +225,14 @@ class JobRecord(BaseModel):
 
 class AgentRecord(BaseModel):
     id: str
+    name: str = ""
     type: AgentType
-    state: AgentState
+    state: SupervisorAgentState
+    current_state: AgentState = AgentState.IDLE
+    progress: int = Field(default=0, ge=0, le=100)
+    current_step: str = "Idle"
+    last_updated_ts: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    error_message: str | None = None
     pid: int | None = None
     workspace: str | None = None
     launch_profile: str | None = None
@@ -318,7 +372,12 @@ class AgentRuntimeStatus(BaseModel):
     machine_id: str
     machine_name: str
     type: AgentType
-    state: AgentState
+    state: SupervisorAgentState
+    current_state: AgentState = AgentState.IDLE
+    progress: int = Field(default=0, ge=0, le=100)
+    current_step: str = "Idle"
+    last_updated_ts: datetime | None = None
+    error_message: str | None = None
     monitor_state: str
     elapsed_seconds: int = 0
     silence_seconds: int | None = None
@@ -344,6 +403,14 @@ class RunningAgentsResponse(BaseModel):
     agents: list[AgentRuntimeStatus]
 
 
+class AgentEvent(BaseModel):
+    event_id: str
+    agent_id: str
+    timestamp: datetime
+    type: EventType
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class AgentEventsResponse(BaseModel):
     agent_id: str
     events: list["SupervisorEvent"]
@@ -354,16 +421,79 @@ class AgentMetricsResponse(BaseModel):
     status: AgentRuntimeStatus
 
 
+class AgentStateResponse(BaseModel):
+    agent_id: str
+    state: AgentStateSnapshot
+
+
+class AgentTimelineResponse(BaseModel):
+    agent_id: str
+    events: list[AgentEvent]
+
+
 class AuditLogResponse(BaseModel):
     entries: list[AuditEntry]
 
 
+class ApprovalRequest(BaseModel):
+    id: str
+    agent_id: str
+    action_type: ApprovalActionType
+    payload: dict[str, Any] = Field(default_factory=dict)
+    status: ApprovalStatus = ApprovalStatus.PENDING
+    created_at: datetime
+    decided_at: datetime | None = None
+    decision_reason: str | None = None
+
+
+class ApprovalListResponse(BaseModel):
+    approvals: list[ApprovalRequest]
+
+
+class ApprovalDecisionResponse(BaseModel):
+    approval: ApprovalRequest
+
+
+class ReplayAgentRequest(BaseModel):
+    instruction: str | None = None
+
+
+class OrchestrationTask(BaseModel):
+    id: str
+    name: str
+    assigned_agent: str | None = None
+    status: TaskStatus = TaskStatus.PENDING
+    dependencies: list[str] = Field(default_factory=list)
+    prompt_template: str
+    created_at: datetime
+    updated_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    error_message: str | None = None
+    summary: str | None = None
+
+
+class CreateTaskRequest(BaseModel):
+    name: str
+    prompt_template: str
+    assigned_agent: str | None = None
+    dependencies: list[str] = Field(default_factory=list)
+
+
 class TaskListResponse(BaseModel):
-    tasks: list[JobRecord]
+    tasks: list[OrchestrationTask]
 
 
 class TaskDetailResponse(BaseModel):
-    task: JobRecord
+    task: OrchestrationTask
+
+
+class JobListResponse(BaseModel):
+    jobs: list[JobRecord]
+
+
+class JobDetailResponse(BaseModel):
+    job: JobRecord
 
 
 class LaunchProfilesResponse(BaseModel):
@@ -411,7 +541,11 @@ class SupervisorEvent(BaseModel):
     machine_health: MachineHealthStatus | None = None
     agent: AgentRecord | None = None
     agent_status: AgentRuntimeStatus | None = None
+    state_update: AgentStateSnapshot | None = None
+    timeline_event: AgentEvent | None = None
+    approval: ApprovalRequest | None = None
     job: JobRecord | None = None
+    task: OrchestrationTask | None = None
     log: LogEntry | None = None
     audit: AuditEntry | None = None
     message: str | None = None
@@ -422,3 +556,6 @@ class PersistedState(BaseModel):
     agents: list[AgentRecord] = Field(default_factory=list)
     jobs: list[JobRecord] = Field(default_factory=list)
     audits: list[AuditEntry] = Field(default_factory=list)
+    timeline_events: list[AgentEvent] = Field(default_factory=list)
+    approvals: list[ApprovalRequest] = Field(default_factory=list)
+    tasks: list[OrchestrationTask] = Field(default_factory=list)

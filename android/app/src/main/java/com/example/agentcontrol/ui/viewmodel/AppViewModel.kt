@@ -4,10 +4,14 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.agentcontrol.data.model.AgentDetailResponse
+import com.example.agentcontrol.data.model.AgentEvent
 import com.example.agentcontrol.data.model.AgentOverviewRecord
 import com.example.agentcontrol.data.model.AgentRecord
 import com.example.agentcontrol.data.model.AgentRuntimeStatus
+import com.example.agentcontrol.data.model.AgentStateSnapshot
+import com.example.agentcontrol.data.model.ApprovalRequest
 import com.example.agentcontrol.data.model.AuditEntry
+import com.example.agentcontrol.data.model.CreateTaskRequest
 import com.example.agentcontrol.data.model.DashboardAgentCard
 import com.example.agentcontrol.data.model.DashboardActivityItem
 import com.example.agentcontrol.data.model.DashboardMachineHealthCard
@@ -20,6 +24,7 @@ import com.example.agentcontrol.data.model.LaunchProfileRecord
 import com.example.agentcontrol.data.model.MachineHealthStatus
 import com.example.agentcontrol.data.model.MachineOverview
 import com.example.agentcontrol.data.model.MachineSelfResponse
+import com.example.agentcontrol.data.model.OrchestrationTask
 import com.example.agentcontrol.data.model.RunningAgentOverview
 import com.example.agentcontrol.data.model.StartAgentRequest
 import com.example.agentcontrol.data.model.SupervisorEvent
@@ -52,6 +57,10 @@ data class AppUiState(
     val dashboardSnapshot: UiState<DashboardSnapshot> = UiState.Loading,
     val selectedAgentMetrics: UiState<AgentRuntimeStatus> = UiState.Loading,
     val selectedAgentEvents: UiState<List<SupervisorEvent>> = UiState.Loading,
+    val selectedAgentState: UiState<AgentStateSnapshot> = UiState.Loading,
+    val selectedAgentTimeline: UiState<List<AgentEvent>> = UiState.Loading,
+    val approvals: UiState<List<ApprovalRequest>> = UiState.Loading,
+    val workflowTasks: UiState<List<OrchestrationTask>> = UiState.Loading,
     val liveEvents: List<SupervisorEvent> = emptyList(),
     val selectedMachineId: String? = null,
     val lastWorkspace: String? = null,
@@ -141,21 +150,26 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
                 it.copy(
                     selectedAgent = UiState.Loading,
                     selectedAgentMetrics = UiState.Loading,
-                    selectedAgentEvents = UiState.Loading
+                    selectedAgentEvents = UiState.Loading,
+                    selectedAgentState = UiState.Loading,
+                    selectedAgentTimeline = UiState.Loading
                 )
             }
             runCatching {
-                Triple(
-                    repository.getAgent(machineId, agentId),
-                    repository.getAgentMetrics(machineId, agentId).status,
-                    repository.getAgentEvents(machineId, agentId).events
-                )
-            }.onSuccess { (response, metrics, events) ->
+                val response = repository.getAgent(machineId, agentId)
+                val stateSnapshot = repository.getAgentState(machineId, agentId).state
+                val metrics = repository.getAgentMetrics(machineId, agentId).status
+                val events = repository.getAgentEvents(machineId, agentId).events
+                val timeline = repository.getAgentTimeline(machineId, agentId).events
+                AgentLoadBundle(response, stateSnapshot, metrics, events, timeline)
+            }.onSuccess { bundle ->
                 _uiState.update {
                     it.copy(
-                        selectedAgent = UiState.Success(response),
-                        selectedAgentMetrics = UiState.Success(metrics),
-                        selectedAgentEvents = UiState.Success(events.sortedByDescending { event -> event.timestamp }),
+                        selectedAgent = UiState.Success(bundle.response),
+                        selectedAgentState = UiState.Success(bundle.state),
+                        selectedAgentMetrics = UiState.Success(bundle.metrics),
+                        selectedAgentEvents = UiState.Success(bundle.events.sortedByDescending { event -> event.timestamp }),
+                        selectedAgentTimeline = UiState.Success(bundle.timeline.sortedByDescending { event -> event.timestamp }),
                         actionError = null
                     )
                 }
@@ -163,8 +177,10 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
                 _uiState.update {
                     it.copy(
                         selectedAgent = UiState.Error(repository.userMessage(error)),
+                        selectedAgentState = UiState.Error(repository.userMessage(error)),
                         selectedAgentMetrics = UiState.Error(repository.userMessage(error)),
-                        selectedAgentEvents = UiState.Error(repository.userMessage(error))
+                        selectedAgentEvents = UiState.Error(repository.userMessage(error)),
+                        selectedAgentTimeline = UiState.Error(repository.userMessage(error))
                     )
                 }
             }
@@ -201,9 +217,27 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
     fun loadTasks(machineId: String) {
         viewModelScope.launch {
             _uiState.update { it.copy(tasks = UiState.Loading) }
-            runCatching { repository.listTasks(machineId).tasks }
+            runCatching { repository.listJobs(machineId).jobs }
                 .onSuccess { tasks -> _uiState.update { it.copy(tasks = UiState.Success(tasks)) } }
                 .onFailure { error -> _uiState.update { it.copy(tasks = UiState.Error(repository.userMessage(error))) } }
+        }
+    }
+
+    fun loadWorkflowTasks(machineId: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(workflowTasks = UiState.Loading) }
+            runCatching { repository.listTasks(machineId).tasks }
+                .onSuccess { tasks -> _uiState.update { it.copy(workflowTasks = UiState.Success(tasks)) } }
+                .onFailure { error -> _uiState.update { it.copy(workflowTasks = UiState.Error(repository.userMessage(error))) } }
+        }
+    }
+
+    fun loadApprovals(machineId: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(approvals = UiState.Loading) }
+            runCatching { repository.listApprovals(machineId).approvals }
+                .onSuccess { approvals -> _uiState.update { it.copy(approvals = UiState.Success(approvals)) } }
+                .onFailure { error -> _uiState.update { it.copy(approvals = UiState.Error(repository.userMessage(error))) } }
         }
     }
 
@@ -484,6 +518,52 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
         }
     }
 
+    fun replayAgent(machineId: String, agentId: String, instruction: String?) {
+        viewModelScope.launch {
+            runCatching { repository.replayAgent(machineId, agentId, instruction) }
+                .onSuccess { response ->
+                    _uiState.update { it.copy(selectedAgent = UiState.Success(response), actionError = null, actionMessage = "Replay submitted") }
+                    refreshMachine(machineId)
+                }
+                .onFailure { error -> _uiState.update { it.copy(actionError = repository.userMessage(error), actionMessage = null) } }
+        }
+    }
+
+    fun approveApproval(machineId: String, approvalId: String) {
+        viewModelScope.launch {
+            runCatching { repository.approveApproval(machineId, approvalId) }
+                .onSuccess {
+                    _uiState.update { it.copy(actionError = null, actionMessage = "Approval granted") }
+                    loadApprovals(machineId)
+                    refreshMachine(machineId)
+                }
+                .onFailure { error -> _uiState.update { it.copy(actionError = repository.userMessage(error), actionMessage = null) } }
+        }
+    }
+
+    fun rejectApproval(machineId: String, approvalId: String) {
+        viewModelScope.launch {
+            runCatching { repository.rejectApproval(machineId, approvalId) }
+                .onSuccess {
+                    _uiState.update { it.copy(actionError = null, actionMessage = "Approval rejected") }
+                    loadApprovals(machineId)
+                    refreshMachine(machineId)
+                }
+                .onFailure { error -> _uiState.update { it.copy(actionError = repository.userMessage(error), actionMessage = null) } }
+        }
+    }
+
+    fun createWorkflowTask(machineId: String, name: String, promptTemplate: String, assignedAgent: String?, dependencies: List<String>) {
+        viewModelScope.launch {
+            runCatching { repository.createTask(machineId, CreateTaskRequest(name, promptTemplate, assignedAgent, dependencies)) }
+                .onSuccess {
+                    _uiState.update { it.copy(actionError = null, actionMessage = "Workflow task created") }
+                    loadWorkflowTasks(machineId)
+                }
+                .onFailure { error -> _uiState.update { it.copy(actionError = repository.userMessage(error), actionMessage = null) } }
+        }
+    }
+
     fun observeMachine(machineId: String) {
         machineEventsJob?.cancel()
         machineEventsJob = viewModelScope.launch {
@@ -496,9 +576,18 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
                                 machineDetail = mergeMachineEvent(current.machineDetail, event),
                                 agents = mergeAgentEvent(current.agents, event),
                                 selectedAgent = mergeAgentDetailEvent(current.selectedAgent, event),
+                                selectedAgentState = mergeAgentStateEvent(current.selectedAgentState, event),
                                 selectedAgentMetrics = mergeAgentMetricsEvent(current.selectedAgentMetrics, event),
                                 selectedAgentEvents = mergeAgentEventsEvent(current.selectedAgentEvents, event),
+                                selectedAgentTimeline = mergeAgentTimelineEvent(
+                                    current.selectedAgentTimeline,
+                                    current.selectedAgent,
+                                    current.selectedAgentState,
+                                    event
+                                ),
                                 tasks = mergeTaskEvent(current.tasks, event),
+                                workflowTasks = mergeWorkflowTaskEvent(current.workflowTasks, event),
+                                approvals = mergeApprovalsEvent(current.approvals, event),
                                 audit = mergeAuditEvent(current.audit, event),
                                 runningAgents = mergeRunningAgentsEvent(current.runningAgents, event),
                                 dashboardActivity = mergeDashboardActivityEvent(current.dashboardActivity, event),
@@ -520,11 +609,21 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
         loadMachineDetail(machineId)
         loadAgents(machineId)
         loadTasks(machineId)
+        loadWorkflowTasks(machineId)
+        loadApprovals(machineId)
         loadAudit(machineId)
         loadRunningAgents()
         loadDashboardActivity()
         rebuildDashboardSnapshot()
     }
+
+    private data class AgentLoadBundle(
+        val response: AgentDetailResponse,
+        val state: AgentStateSnapshot,
+        val metrics: AgentRuntimeStatus,
+        val events: List<SupervisorEvent>,
+        val timeline: List<AgentEvent>
+    )
 
     private fun recordMachineTransitions(previous: List<MachineOverview>, current: List<MachineOverview>) {
         val previousMap = previous.associateBy { it.config.id }
@@ -716,6 +815,14 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
         }
     }
 
+    private fun mergeAgentStateEvent(current: UiState<AgentStateSnapshot>, event: SupervisorEvent): UiState<AgentStateSnapshot> {
+        val stateUpdate = event.stateUpdate ?: return current
+        return when (current) {
+            is UiState.Success -> if (current.data.agentId == stateUpdate.agentId) UiState.Success(stateUpdate) else current
+            else -> current
+        }
+    }
+
     private fun mergeAgentEventsEvent(current: UiState<List<SupervisorEvent>>, event: SupervisorEvent): UiState<List<SupervisorEvent>> {
         val agentId = event.agent?.id ?: event.job?.agentId ?: event.agentStatus?.agentId ?: return current
         return when (current) {
@@ -726,6 +833,49 @@ class AppViewModel(private val repository: MachineRepository) : ViewModel() {
                 if (existingAgentId != null && existingAgentId != agentId) current
                 else UiState.Success((listOf(event) + current.data).distinctBy { "${it.timestamp}-${it.event}-${it.message}" }.take(50))
             }
+            else -> current
+        }
+    }
+
+    private fun mergeAgentTimelineEvent(
+        current: UiState<List<AgentEvent>>,
+        selectedAgent: UiState<AgentDetailResponse>,
+        selectedAgentState: UiState<AgentStateSnapshot>,
+        event: SupervisorEvent
+    ): UiState<List<AgentEvent>> {
+        val timelineEvent = event.timelineEvent ?: return current
+        val selectedAgentId =
+            (selectedAgent as? UiState.Success)?.data?.agent?.id
+                ?: (selectedAgentState as? UiState.Success)?.data?.agentId
+        return when (current) {
+            is UiState.Success -> {
+                if (selectedAgentId != null && timelineEvent.agentId != selectedAgentId) {
+                    current
+                } else {
+                    UiState.Success(
+                        (listOf(timelineEvent) + current.data)
+                            .distinctBy { it.eventId }
+                            .sortedByDescending { it.timestamp }
+                            .take(100)
+                    )
+                }
+            }
+            else -> current
+        }
+    }
+
+    private fun mergeApprovalsEvent(current: UiState<List<ApprovalRequest>>, event: SupervisorEvent): UiState<List<ApprovalRequest>> {
+        val approval = event.approval ?: return current
+        return when (current) {
+            is UiState.Success -> UiState.Success((current.data.filterNot { it.id == approval.id } + approval).sortedByDescending { it.createdAt }.take(50))
+            else -> current
+        }
+    }
+
+    private fun mergeWorkflowTaskEvent(current: UiState<List<OrchestrationTask>>, event: SupervisorEvent): UiState<List<OrchestrationTask>> {
+        val task = event.task ?: return current
+        return when (current) {
+            is UiState.Success -> UiState.Success((current.data.filterNot { it.id == task.id } + task).sortedByDescending { it.updatedAt }.take(50))
             else -> current
         }
     }

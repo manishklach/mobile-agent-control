@@ -5,8 +5,14 @@ import com.example.agentcontrol.data.model.AgentEventsResponse
 import com.example.agentcontrol.data.model.AgentListResponse
 import com.example.agentcontrol.data.model.AgentMetricsResponse
 import com.example.agentcontrol.data.model.AgentOverviewListResponse
+import com.example.agentcontrol.data.model.AgentStateResponse
+import com.example.agentcontrol.data.model.AgentTimelineResponse
+import com.example.agentcontrol.data.model.ApprovalDecisionResponse
+import com.example.agentcontrol.data.model.ApprovalListResponse
 import com.example.agentcontrol.data.model.AuditLogResponse
+import com.example.agentcontrol.data.model.CreateTaskRequest
 import com.example.agentcontrol.data.model.HealthResponse
+import com.example.agentcontrol.data.model.JobListResponse
 import com.example.agentcontrol.data.model.LaunchAgentRequest
 import com.example.agentcontrol.data.model.LaunchProfilesResponse
 import com.example.agentcontrol.data.model.LogsResponse
@@ -15,6 +21,7 @@ import com.example.agentcontrol.data.model.MachineHealthStatus
 import com.example.agentcontrol.data.model.MachineListResponse
 import com.example.agentcontrol.data.model.MachineSelfResponse
 import com.example.agentcontrol.data.model.PromptAgentRequest
+import com.example.agentcontrol.data.model.ReplayAgentRequest
 import com.example.agentcontrol.data.model.RestartAgentRequest
 import com.example.agentcontrol.data.model.RuntimeAdapterStatusResponse
 import com.example.agentcontrol.data.model.RuntimeAdaptersResponse
@@ -63,6 +70,12 @@ interface MachineApi {
     @GET("agents/{id}")
     suspend fun getAgent(@Path("id") id: String): AgentDetailResponse
 
+    @GET("agents/{id}/state")
+    suspend fun getAgentState(@Path("id") id: String): AgentStateResponse
+
+    @GET("agents/{id}/timeline")
+    suspend fun getAgentTimeline(@Path("id") id: String, @Query("limit") limit: Int = 100): AgentTimelineResponse
+
     @POST("agents/start")
     suspend fun startAgent(@Body request: StartAgentRequest): AgentDetailResponse
 
@@ -105,6 +118,9 @@ interface MachineApi {
     @POST("agents/{id}/prompt")
     suspend fun promptAgent(@Path("id") id: String, @Body request: PromptAgentRequest): AgentDetailResponse
 
+    @POST("agents/{id}/replay")
+    suspend fun replayAgent(@Path("id") id: String, @Body request: ReplayAgentRequest): AgentDetailResponse
+
     @GET("agents/{id}/logs")
     suspend fun logs(@Path("id") id: String, @Query("limit") limit: Int = 100): LogsResponse
 
@@ -117,8 +133,23 @@ interface MachineApi {
     @GET("tasks")
     suspend fun listTasks(@Query("limit") limit: Int = 100): TaskListResponse
 
+    @POST("tasks")
+    suspend fun createTask(@Body request: CreateTaskRequest): TaskDetailResponse
+
     @GET("tasks/{id}")
     suspend fun getTask(@Path("id") id: String): TaskDetailResponse
+
+    @GET("jobs")
+    suspend fun listJobs(@Query("limit") limit: Int = 100): JobListResponse
+
+    @GET("approvals")
+    suspend fun listApprovals(): ApprovalListResponse
+
+    @POST("approvals/{id}/approve")
+    suspend fun approveApproval(@Path("id") id: String): ApprovalDecisionResponse
+
+    @POST("approvals/{id}/reject")
+    suspend fun rejectApproval(@Path("id") id: String): ApprovalDecisionResponse
 
     @GET("audit")
     suspend fun audit(@Query("limit") limit: Int = 100): AuditLogResponse

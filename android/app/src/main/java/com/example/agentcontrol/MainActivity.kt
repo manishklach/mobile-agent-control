@@ -151,6 +151,8 @@ class MainActivity : ComponentActivity() {
                             viewModel.loadMachineDetail(machineId)
                             viewModel.loadAgents(machineId)
                             viewModel.loadTasks(machineId)
+                            viewModel.loadWorkflowTasks(machineId)
+                            viewModel.loadApprovals(machineId)
                             viewModel.loadAudit(machineId)
                             viewModel.observeMachine(machineId)
                         }
@@ -176,6 +178,8 @@ class MainActivity : ComponentActivity() {
                                 viewModel.loadMachineDetail(machineId)
                                 viewModel.loadAgents(machineId)
                                 viewModel.loadTasks(machineId)
+                                viewModel.loadWorkflowTasks(machineId)
+                                viewModel.loadApprovals(machineId)
                                 viewModel.loadAudit(machineId)
                                 viewModel.loadRunningAgents()
                             }
@@ -240,16 +244,28 @@ class MainActivity : ComponentActivity() {
                         val machineId = entry.arguments?.getString("machineId") ?: return@composable
                         LaunchedEffect(machineId) {
                             viewModel.loadTasks(machineId)
+                            viewModel.loadWorkflowTasks(machineId)
+                            viewModel.loadApprovals(machineId)
                             viewModel.loadAudit(machineId)
                             viewModel.observeMachine(machineId)
                         }
                         MachineActivityScreen(
                             tasksState = uiState.tasks,
+                            workflowTasksState = uiState.workflowTasks,
+                            approvalsState = uiState.approvals,
                             auditState = uiState.audit,
                             onBack = { navController.popBackStack() },
                             onRefresh = {
                                 viewModel.loadTasks(machineId)
+                                viewModel.loadWorkflowTasks(machineId)
+                                viewModel.loadApprovals(machineId)
                                 viewModel.loadAudit(machineId)
+                            },
+                            onOpenAgent = { agentId -> navController.navigate("machine/$machineId/agent/$agentId") },
+                            onApprove = { approvalId -> viewModel.approveApproval(machineId, approvalId) },
+                            onReject = { approvalId -> viewModel.rejectApproval(machineId, approvalId) },
+                            onCreateTask = { name, promptTemplate, assignedAgent, dependencies ->
+                                viewModel.createWorkflowTask(machineId, name, promptTemplate, assignedAgent, dependencies)
                             }
                         )
                     }
@@ -268,8 +284,10 @@ class MainActivity : ComponentActivity() {
                         }
                         AgentDetailScreen(
                             state = uiState.selectedAgent,
+                            structuredState = uiState.selectedAgentState,
                             metricsState = uiState.selectedAgentMetrics,
                             eventsState = uiState.selectedAgentEvents,
+                            timelineState = uiState.selectedAgentTimeline,
                             liveEvents = uiState.liveEvents.filter { event ->
                                 event.agent?.id == agentId || event.job?.agentId == agentId
                             },
@@ -280,7 +298,8 @@ class MainActivity : ComponentActivity() {
                             onRefresh = { viewModel.loadAgent(machineId, agentId) },
                             onStop = { viewModel.stopAgent(machineId, agentId) },
                             onRestart = { reason -> viewModel.restartAgent(machineId, agentId, reason) },
-                            onPrompt = { prompt -> viewModel.sendPrompt(machineId, agentId, prompt) }
+                            onPrompt = { prompt -> viewModel.sendPrompt(machineId, agentId, prompt) },
+                            onReplay = { instruction -> viewModel.replayAgent(machineId, agentId, instruction) }
                         )
                     }
                     composable(Route.Settings.value) {

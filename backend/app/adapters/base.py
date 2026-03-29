@@ -85,6 +85,44 @@ class CliAgentRuntimeAdapter(ABC):
             return f"{message} (exit code {exit_code})"
         return message
 
+    def structured_state_updates(
+        self,
+        prompt: str,
+        workspace: str,
+        *,
+        runtime_model: str | None = None,
+        command_name: str | None = None,
+    ) -> list[dict[str, object]]:
+        step = "Executing prompt"
+        if command_name:
+            step = f"Running /{command_name}"
+        elif runtime_model:
+            step = f"Running with model {runtime_model}"
+        return [
+            {"state": "RUNNING", "step": "Preparing runtime", "progress": 5},
+            {"state": "RUNNING", "step": step, "progress": 35},
+        ]
+
+    def risky_action_requests(
+        self,
+        prompt: str,
+        workspace: str,
+        *,
+        runtime_model: str | None = None,
+        command_name: str | None = None,
+    ) -> list[dict[str, object]]:
+        lowered = prompt.lower()
+        requests: list[dict[str, object]] = []
+        if any(token in lowered for token in ("rm ", "delete ", "remove file", "unlink ", "rmdir ")):
+            requests.append({"action_type": "DELETE_FILE", "payload": {"prompt": prompt, "workspace": workspace}})
+        if any(token in lowered for token in ("write file", "modify file", "edit file", "create file", "patch ")):
+            requests.append({"action_type": "WRITE_FILE", "payload": {"prompt": prompt, "workspace": workspace}})
+        if any(token in lowered for token in ("curl ", "wget ", "http://", "https://", "fetch ", "download ", "api call", "network")):
+            requests.append({"action_type": "NETWORK_CALL", "payload": {"prompt": prompt, "workspace": workspace}})
+        if any(token in lowered for token in ("run ", "npm ", "pytest", "python ", "pip ", "cargo ", "make ", "git ")):
+            requests.append({"action_type": "RUN_COMMAND", "payload": {"prompt": prompt, "workspace": workspace}})
+        return requests
+
     @abstractmethod
     def run_prompt(
         self,

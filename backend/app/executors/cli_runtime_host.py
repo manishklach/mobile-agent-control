@@ -59,6 +59,13 @@ def main() -> int:
             return 0
         if not prompt:
             continue
+        for update in adapter.structured_state_updates(
+            prompt,
+            workspace,
+            runtime_model=runtime_model,
+            command_name=command_name,
+        ):
+            emit_event("state.update", job_id=job_id or None, **update)
         emit_event("job.started", job_id=job_id or None)
         exit_code, summary = adapter.run_prompt(
             prompt,
@@ -69,9 +76,24 @@ def main() -> int:
         if summary:
             emit(summary)
         if exit_code == 0:
+            emit_event(
+                "state.update",
+                job_id=job_id or None,
+                state="COMPLETED",
+                step="Completed",
+                progress=100,
+            )
             emit_event("job.completed", job_id=job_id or None, summary=summary)
         else:
             error = adapter.classify_runtime_error(summary or f"{adapter.adapter_id} exited with code {exit_code}", exit_code)
+            emit_event(
+                "state.update",
+                job_id=job_id or None,
+                state="FAILED",
+                step="Failed",
+                progress=100,
+                error=error,
+            )
             emit_event("job.failed", job_id=job_id or None, summary=summary, error=error)
 
     emit("stdin closed")

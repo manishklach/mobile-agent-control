@@ -91,8 +91,14 @@ data class LogEntry(
 @Serializable
 data class AgentRecord(
     val id: String,
+    val name: String = "",
     val type: String,
     val state: String,
+    @SerialName("current_state") val currentState: String = "IDLE",
+    val progress: Int = 0,
+    @SerialName("current_step") val currentStep: String = "Idle",
+    @SerialName("last_updated_ts") val lastUpdatedTs: String? = null,
+    @SerialName("error_message") val errorMessage: String? = null,
     val pid: Int? = null,
     val workspace: String? = null,
     @SerialName("launch_profile") val launchProfile: String? = null,
@@ -180,6 +186,11 @@ data class AgentRuntimeStatus(
     @SerialName("machine_name") val machineName: String,
     val type: String,
     val state: String,
+    @SerialName("current_state") val currentState: String = "IDLE",
+    val progress: Int = 0,
+    @SerialName("current_step") val currentStep: String = "Idle",
+    @SerialName("last_updated_ts") val lastUpdatedTs: String? = null,
+    @SerialName("error_message") val errorMessage: String? = null,
     @SerialName("monitor_state") val monitorState: String,
     @SerialName("elapsed_seconds") val elapsedSeconds: Int,
     @SerialName("silence_seconds") val silenceSeconds: Int? = null,
@@ -219,10 +230,96 @@ data class AgentMetricsResponse(
 )
 
 @Serializable
-data class TaskListResponse(val tasks: List<JobRecord>)
+data class AgentStateSnapshot(
+    @SerialName("agent_id") val agentId: String,
+    val name: String,
+    @SerialName("current_state") val currentState: String,
+    val progress: Int = 0,
+    @SerialName("current_step") val currentStep: String,
+    @SerialName("last_updated_ts") val lastUpdatedTs: String,
+    @SerialName("error_message") val errorMessage: String? = null
+)
 
 @Serializable
-data class TaskDetailResponse(val task: JobRecord)
+data class AgentStateResponse(
+    @SerialName("agent_id") val agentId: String,
+    val state: AgentStateSnapshot
+)
+
+@Serializable
+data class AgentEvent(
+    @SerialName("event_id") val eventId: String,
+    @SerialName("agent_id") val agentId: String,
+    val timestamp: String,
+    val type: String,
+    val payload: JsonObject = JsonObject(emptyMap())
+)
+
+@Serializable
+data class AgentTimelineResponse(
+    @SerialName("agent_id") val agentId: String,
+    val events: List<AgentEvent>
+)
+
+@Serializable
+data class ApprovalRequest(
+    val id: String,
+    @SerialName("agent_id") val agentId: String,
+    @SerialName("action_type") val actionType: String,
+    val payload: JsonObject = JsonObject(emptyMap()),
+    val status: String,
+    @SerialName("created_at") val createdAt: String,
+    @SerialName("decided_at") val decidedAt: String? = null,
+    @SerialName("decision_reason") val decisionReason: String? = null
+)
+
+@Serializable
+data class ApprovalListResponse(
+    val approvals: List<ApprovalRequest>
+)
+
+@Serializable
+data class ApprovalDecisionResponse(
+    val approval: ApprovalRequest
+)
+
+@Serializable
+data class ReplayAgentRequest(
+    val instruction: String? = null
+)
+
+@Serializable
+data class OrchestrationTask(
+    val id: String,
+    val name: String,
+    @SerialName("assigned_agent") val assignedAgent: String? = null,
+    val status: String,
+    val dependencies: List<String> = emptyList(),
+    @SerialName("prompt_template") val promptTemplate: String,
+    @SerialName("created_at") val createdAt: String,
+    @SerialName("updated_at") val updatedAt: String,
+    @SerialName("started_at") val startedAt: String? = null,
+    @SerialName("finished_at") val finishedAt: String? = null,
+    @SerialName("error_message") val errorMessage: String? = null,
+    val summary: String? = null
+)
+
+@Serializable
+data class CreateTaskRequest(
+    val name: String,
+    @SerialName("prompt_template") val promptTemplate: String,
+    @SerialName("assigned_agent") val assignedAgent: String? = null,
+    val dependencies: List<String> = emptyList()
+)
+
+@Serializable
+data class TaskListResponse(val tasks: List<OrchestrationTask>)
+
+@Serializable
+data class TaskDetailResponse(val task: OrchestrationTask)
+
+@Serializable
+data class JobListResponse(val jobs: List<JobRecord>)
 
 @Serializable
 data class AuditLogResponse(val entries: List<AuditEntry>)
@@ -368,7 +465,11 @@ data class SupervisorEvent(
     @SerialName("machine_health") val machineHealth: MachineHealthStatus? = null,
     val agent: AgentRecord? = null,
     @SerialName("agent_status") val agentStatus: AgentRuntimeStatus? = null,
+    @SerialName("state_update") val stateUpdate: AgentStateSnapshot? = null,
+    @SerialName("timeline_event") val timelineEvent: AgentEvent? = null,
+    val approval: ApprovalRequest? = null,
     val job: JobRecord? = null,
+    val task: OrchestrationTask? = null,
     val log: LogEntry? = null,
     val audit: AuditEntry? = null,
     val message: String? = null

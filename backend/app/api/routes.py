@@ -11,9 +11,16 @@ from app.models import (
     AgentListResponse,
     AgentMetricsResponse,
     AgentOverviewListResponse,
+    AgentStateResponse,
+    AgentTimelineResponse,
+    ApprovalDecisionResponse,
+    ApprovalListResponse,
     AuditLogResponse,
+    CreateTaskRequest,
     DiagnosisResponse,
     HealthResponse,
+    JobDetailResponse,
+    JobListResponse,
     LaunchAgentRequest,
     LaunchProfilesResponse,
     LogsResponse,
@@ -22,6 +29,7 @@ from app.models import (
     MachineListResponse,
     MachineSelfResponse,
     PromptAgentRequest,
+    ReplayAgentRequest,
     RestartAgentRequest,
     RestartMachineRequest,
     RestartMachineResponse,
@@ -116,6 +124,25 @@ async def get_agent(
     _: str = Depends(get_current_token),
 ) -> AgentDetailResponse:
     return await manager.get_agent(agent_id)
+
+
+@router.get("/agents/{agent_id}/state", response_model=AgentStateResponse)
+async def get_agent_state(
+    agent_id: str,
+    manager: AgentManager = Depends(get_agent_manager),
+    _: str = Depends(get_current_token),
+) -> AgentStateResponse:
+    return await manager.get_agent_state(agent_id)
+
+
+@router.get("/agents/{agent_id}/timeline", response_model=AgentTimelineResponse)
+async def get_agent_timeline(
+    agent_id: str,
+    limit: int = Query(default=100, ge=1, le=500),
+    manager: AgentManager = Depends(get_agent_manager),
+    _: str = Depends(get_current_token),
+) -> AgentTimelineResponse:
+    return await manager.get_agent_timeline(agent_id, limit)
 
 
 @router.post("/agents/start", response_model=AgentDetailResponse, status_code=status.HTTP_201_CREATED)
@@ -258,6 +285,16 @@ async def prompt_agent(
     return await manager.send_prompt(agent_id, request)
 
 
+@router.post("/agents/{agent_id}/replay", response_model=AgentDetailResponse)
+async def replay_agent(
+    agent_id: str,
+    request: ReplayAgentRequest,
+    manager: AgentManager = Depends(get_agent_manager),
+    _: str = Depends(get_current_token),
+) -> AgentDetailResponse:
+    return await manager.replay_agent(agent_id, request)
+
+
 @router.post("/agents/{agent_id}/tasks", response_model=AgentDetailResponse)
 async def submit_task(
     agent_id: str,
@@ -324,6 +361,15 @@ async def list_tasks(
     return await manager.list_tasks(limit)
 
 
+@router.post("/tasks", response_model=TaskDetailResponse, status_code=status.HTTP_201_CREATED)
+async def create_task(
+    request: CreateTaskRequest,
+    manager: AgentManager = Depends(get_agent_manager),
+    _: str = Depends(get_current_token),
+) -> TaskDetailResponse:
+    return await manager.create_task(request)
+
+
 @router.get("/tasks/{task_id}", response_model=TaskDetailResponse)
 async def get_task(
     task_id: str,
@@ -331,6 +377,50 @@ async def get_task(
     _: str = Depends(get_current_token),
 ) -> TaskDetailResponse:
     return await manager.get_task(task_id)
+
+
+@router.get("/jobs", response_model=JobListResponse)
+async def list_jobs(
+    limit: int = Query(default=100, ge=1, le=500),
+    manager: AgentManager = Depends(get_agent_manager),
+    _: str = Depends(get_current_token),
+) -> JobListResponse:
+    return await manager.list_jobs(limit)
+
+
+@router.get("/jobs/{job_id}", response_model=JobDetailResponse)
+async def get_job(
+    job_id: str,
+    manager: AgentManager = Depends(get_agent_manager),
+    _: str = Depends(get_current_token),
+) -> JobDetailResponse:
+    return JobDetailResponse(job=await manager.get_job(job_id))
+
+
+@router.get("/approvals", response_model=ApprovalListResponse)
+async def list_approvals(
+    manager: AgentManager = Depends(get_agent_manager),
+    _: str = Depends(get_current_token),
+) -> ApprovalListResponse:
+    return await manager.list_approvals()
+
+
+@router.post("/approvals/{approval_id}/approve", response_model=ApprovalDecisionResponse)
+async def approve_request(
+    approval_id: str,
+    manager: AgentManager = Depends(get_agent_manager),
+    _: str = Depends(get_current_token),
+) -> ApprovalDecisionResponse:
+    return await manager.approve_request(approval_id)
+
+
+@router.post("/approvals/{approval_id}/reject", response_model=ApprovalDecisionResponse)
+async def reject_request(
+    approval_id: str,
+    manager: AgentManager = Depends(get_agent_manager),
+    _: str = Depends(get_current_token),
+) -> ApprovalDecisionResponse:
+    return await manager.reject_request(approval_id)
 
 
 @router.websocket("/ws")

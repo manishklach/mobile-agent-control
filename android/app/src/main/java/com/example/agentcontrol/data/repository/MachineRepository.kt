@@ -6,10 +6,16 @@ import com.example.agentcontrol.data.model.AgentEventsResponse
 import com.example.agentcontrol.data.model.AgentListResponse
 import com.example.agentcontrol.data.model.AgentMetricsResponse
 import com.example.agentcontrol.data.model.AgentOverviewListResponse
+import com.example.agentcontrol.data.model.AgentStateResponse
+import com.example.agentcontrol.data.model.AgentTimelineResponse
+import com.example.agentcontrol.data.model.ApprovalDecisionResponse
+import com.example.agentcontrol.data.model.ApprovalListResponse
 import com.example.agentcontrol.data.model.DashboardAgentCard
 import com.example.agentcontrol.data.model.AuditLogResponse
+import com.example.agentcontrol.data.model.CreateTaskRequest
 import com.example.agentcontrol.data.model.DashboardActivityItem
 import com.example.agentcontrol.data.model.HealthResponse
+import com.example.agentcontrol.data.model.JobListResponse
 import com.example.agentcontrol.data.model.LaunchAgentRequest
 import com.example.agentcontrol.data.model.LaunchProfilesResponse
 import com.example.agentcontrol.data.model.LogsResponse
@@ -20,6 +26,7 @@ import com.example.agentcontrol.data.model.MachineOverview
 import com.example.agentcontrol.data.model.RunningAgentOverview
 import com.example.agentcontrol.data.model.MachineSelfResponse
 import com.example.agentcontrol.data.model.PromptAgentRequest
+import com.example.agentcontrol.data.model.ReplayAgentRequest
 import com.example.agentcontrol.data.model.RestartAgentRequest
 import com.example.agentcontrol.data.model.RuntimeAdapterStatusResponse
 import com.example.agentcontrol.data.model.RuntimeAdaptersResponse
@@ -103,6 +110,16 @@ class MachineRepository(
         ApiClientFactory.create(machine.baseUrl) { machine.token }.first.getAgent(agentId)
     }
 
+    suspend fun getAgentState(machineId: String, agentId: String): AgentStateResponse = withContext(ioDispatcher) {
+        val machine = requireMachine(machineId)
+        ApiClientFactory.create(machine.baseUrl) { machine.token }.first.getAgentState(agentId)
+    }
+
+    suspend fun getAgentTimeline(machineId: String, agentId: String): AgentTimelineResponse = withContext(ioDispatcher) {
+        val machine = requireMachine(machineId)
+        ApiClientFactory.create(machine.baseUrl) { machine.token }.first.getAgentTimeline(agentId)
+    }
+
     suspend fun runningAgents(machineId: String): RunningAgentsResponse = withContext(ioDispatcher) {
         val machine = requireMachine(machineId)
         ApiClientFactory.create(machine.baseUrl) { machine.token }.first.runningAgents()
@@ -172,6 +189,11 @@ class MachineRepository(
         ApiClientFactory.create(machine.baseUrl) { machine.token }.first.promptAgent(agentId, PromptAgentRequest(prompt))
     }
 
+    suspend fun replayAgent(machineId: String, agentId: String, instruction: String?): AgentDetailResponse = withContext(ioDispatcher) {
+        val machine = requireMachine(machineId)
+        ApiClientFactory.create(machine.baseUrl) { machine.token }.first.replayAgent(agentId, ReplayAgentRequest(instruction))
+    }
+
     suspend fun getLogs(machineId: String, agentId: String): LogsResponse = withContext(ioDispatcher) {
         val machine = requireMachine(machineId)
         ApiClientFactory.create(machine.baseUrl) { machine.token }.first.logs(agentId)
@@ -195,6 +217,31 @@ class MachineRepository(
     suspend fun getTask(machineId: String, taskId: String): TaskDetailResponse = withContext(ioDispatcher) {
         val machine = requireMachine(machineId)
         ApiClientFactory.create(machine.baseUrl) { machine.token }.first.getTask(taskId)
+    }
+
+    suspend fun listJobs(machineId: String): JobListResponse = withContext(ioDispatcher) {
+        val machine = requireMachine(machineId)
+        ApiClientFactory.create(machine.baseUrl) { machine.token }.first.listJobs()
+    }
+
+    suspend fun createTask(machineId: String, request: CreateTaskRequest): TaskDetailResponse = withContext(ioDispatcher) {
+        val machine = requireMachine(machineId)
+        ApiClientFactory.create(machine.baseUrl) { machine.token }.first.createTask(request)
+    }
+
+    suspend fun listApprovals(machineId: String): ApprovalListResponse = withContext(ioDispatcher) {
+        val machine = requireMachine(machineId)
+        ApiClientFactory.create(machine.baseUrl) { machine.token }.first.listApprovals()
+    }
+
+    suspend fun approveApproval(machineId: String, approvalId: String): ApprovalDecisionResponse = withContext(ioDispatcher) {
+        val machine = requireMachine(machineId)
+        ApiClientFactory.create(machine.baseUrl) { machine.token }.first.approveApproval(approvalId)
+    }
+
+    suspend fun rejectApproval(machineId: String, approvalId: String): ApprovalDecisionResponse = withContext(ioDispatcher) {
+        val machine = requireMachine(machineId)
+        ApiClientFactory.create(machine.baseUrl) { machine.token }.first.rejectApproval(approvalId)
     }
 
     suspend fun getAudit(machineId: String): AuditLogResponse = withContext(ioDispatcher) {
@@ -276,7 +323,7 @@ class MachineRepository(
                         detail = entry.message
                     )
                 }
-                val taskItems = api.listTasks(limit = 10).tasks.mapNotNull { task ->
+                val taskItems = api.listJobs(limit = 10).jobs.mapNotNull { task ->
                     if (task.state !in setOf("completed", "failed", "cancelled")) return@mapNotNull null
                     DashboardActivityItem(
                         machineId = machine.id,

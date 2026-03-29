@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-print("RELOADING AGENT_MANAGER.PY")
-
 import asyncio
 import json
 import os
@@ -23,6 +21,7 @@ from app.executors.mock_executor import MockExecutor
 from app.models import (
     AgentDetailResponse,
     AgentEventsResponse,
+    AgentEvent,
     AgentListResponse,
     AgentMetricsResponse,
     AgentOverviewListResponse,
@@ -30,12 +29,23 @@ from app.models import (
     AgentRecord,
     AgentRuntimeStatus,
     AgentState,
+    AgentStateResponse,
+    AgentStateSnapshot,
+    AgentTimelineResponse,
+    ApprovalActionType,
+    ApprovalDecisionResponse,
+    ApprovalListResponse,
+    ApprovalRequest,
+    ApprovalStatus,
     AuditEntry,
     AuditLogResponse,
     AuditStatus,
+    CreateTaskRequest,
     DiagnosisResponse,
+    EventType,
     HealthResponse,
     JobKind,
+    JobListResponse,
     JobRecord,
     JobState,
     LaunchAgentRequest,
@@ -47,7 +57,9 @@ from app.models import (
     MachineListResponse,
     MachineRecord,
     MachineSelfResponse,
+    OrchestrationTask,
     PromptAgentRequest,
+    ReplayAgentRequest,
     RestartAgentRequest,
     RestartMachineResponse,
     RuntimeAdapterRecord,
@@ -56,10 +68,12 @@ from app.models import (
     RunningAgentsResponse,
     SlashCommandsResponse,
     StartAgentRequest,
+    SupervisorAgentState,
     SubmitTaskRequest,
     SupervisorEvent,
     TaskDetailResponse,
     TaskListResponse,
+    TaskStatus,
     PersistedState,
     WorkspaceRecord,
     WorkspacesResponse,
@@ -122,11 +136,15 @@ class AgentManager:
         self._jobs: dict[str, JobRecord] = {}
         self._handles: dict[str, ProcessHandle] = {}
         self._audits: list[AuditEntry] = []
+        self._timeline_events: dict[str, deque[AgentEvent]] = {}
+        self._approvals: dict[str, ApprovalRequest] = {}
+        self._tasks: dict[str, OrchestrationTask] = {}
         self._pending_queue: deque[str] = deque()
         self._job_tasks: dict[str, asyncio.Task[None]] = {}
         self._process_monitors: dict[str, asyncio.Task[None]] = {}
         self._log_offsets: dict[str, int] = {}
         self._heartbeat_task: asyncio.Task[None] | None = None
+        self._scheduler_task: asyncio.Task[None] | None = None
         self._last_heartbeat_at = now
         self._event_history: deque[SupervisorEvent] = deque(maxlen=self.settings.max_log_entries)
         self._agent_event_history: dict[str, deque[SupervisorEvent]] = {}
@@ -142,7 +160,7 @@ class AgentManager:
             machine_id=self.machine.id,
             machine_name=self.machine.name,
             agents_total=len(self._agents),
-            agents_running=sum(1 for agent in self._agents.values() if agent.state in {AgentState.RUNNING, AgentState.IDLE}),
+            agents_running=sum(1 for agent in self._agents.values() if agent.state in {SupervisorAgentState.RUNNING, SupervisorAgentState.IDLE}),
             queued_jobs=sum(1 for job in self._jobs.values() if job.state == JobState.QUEUED),
         )
 
@@ -161,7 +179,7 @@ class AgentManager:
         return MachineSelfResponse(
             machine=self.machine,
             agents_total=len(self._agents),
-            active_agents=sum(1 for agent in self._agents.values() if agent.state in {AgentState.RUNNING, AgentState.IDLE, AgentState.STARTING}),
+            active_agents=sum(1 for agent in self._agents.values() if agent.state in {SupervisorAgentState.RUNNING, SupervisorAgentState.IDLE, SupervisorAgentState.STARTING}),
             queued_jobs=sum(1 for job in self._jobs.values() if job.state == JobState.QUEUED),
             max_active_agents=self.settings.max_active_agents,
         )
@@ -174,7 +192,7 @@ class AgentManager:
 
     async def running_agents(self) -> RunningAgentsResponse:
         await self._refresh_machine()
-        active_states = {AgentState.RUNNING, AgentState.IDLE, AgentState.STARTING, AgentState.PENDING, AgentState.STOPPING}
+        active_states = {SupervisorAgentState.RUNNING, SupervisorAgentState.IDLE, SupervisorAgentState.STARTING, SupervisorAgentState.PENDING, SupervisorAgentState.STOPPING}
         statuses = [
             self._agent_runtime_status(agent)
             for agent in self._agents.values()
@@ -227,6 +245,16 @@ class AgentManager:
             recent_jobs=recent_jobs,
             latest_diagnosis=self._diagnoses.get(agent_id),
         )
+
+    async def get_agent_state(self, agent_id: str) -> AgentStateResponse:
+        agent = self._require_agent(agent_id)
+        return AgentStateResponse(agent_id=agent_id, state=self._agent_state_snapshot(agent))
+
+    async def get_agent_timeline(self, agent_id: str, limit: int = 100) -> AgentTimelineResponse:
+        self._require_agent(agent_id)
+        timeline = list(self._timeline_events.get(agent_id, deque()))
+        timeline.sort(key=lambda item: item.timestamp)
+        return AgentTimelineResponse(agent_id=agent_id, events=timeline[-limit:])
 
     async def get_launch_profiles(self) -> LaunchProfilesResponse:
         profiles = [LaunchProfileRecord(**profile.public_dict()) for profile in self.launch_profiles.values()]
@@ -345,8 +373,14 @@ class AgentManager:
                 startup_job = self._create_job(agent_id=agent_id, kind=JobKind.STARTUP, input_text=request.initial_task or "start agent")
                 agent = AgentRecord(
                     id=agent_id,
+                    name=self._default_agent_name(request.type, agent_id),
                     type=request.type,
-                    state=AgentState.PENDING,
+                    state=SupervisorAgentState.PENDING,
+                    current_state=AgentState.IDLE,
+                    progress=0,
+                    current_step="Queued for startup",
+                    last_updated_ts=now,
+                    error_message=None,
                     pid=None,
                     workspace=None,
                     launch_profile=None,
@@ -416,8 +450,14 @@ class AgentManager:
                 )
                 agent = AgentRecord(
                     id=agent_id,
+                    name=self._default_agent_name(request.type, agent_id),
                     type=request.type,
-                    state=AgentState.PENDING,
+                    state=SupervisorAgentState.PENDING,
+                    current_state=AgentState.IDLE,
+                    progress=0,
+                    current_step="Queued for launch",
+                    last_updated_ts=now,
+                    error_message=None,
                     pid=None,
                     workspace=str(workspace),
                     launch_profile=request.launch_profile,
@@ -473,9 +513,9 @@ class AgentManager:
                 status=AuditStatus.ACCEPTED,
                 message="Stop command accepted by supervisor",
             )
-            if agent.state == AgentState.PENDING:
+            if agent.state == SupervisorAgentState.PENDING:
                 self._remove_from_queue(agent_id)
-                agent.state = AgentState.STOPPED
+                agent.state = SupervisorAgentState.STOPPED
                 agent.updated_at = datetime.now(UTC)
                 if agent.current_job_id:
                     self._complete_job(agent.current_job_id, JobState.CANCELLED, "Agent start cancelled before launch")
@@ -487,7 +527,7 @@ class AgentManager:
             if handle is None:
                 raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Agent is not active")
 
-            agent.state = AgentState.STOPPING
+            agent.state = SupervisorAgentState.STOPPING
             agent.updated_at = datetime.now(UTC)
             await self._publish("agent.stopping", agent=agent, message="Stopping agent")
             executor = self._executor_for(agent)
@@ -509,7 +549,7 @@ class AgentManager:
                 status=AuditStatus.ACCEPTED,
                 message=request.reason or "Restart command accepted",
             )
-            if agent.state in {AgentState.RUNNING, AgentState.IDLE, AgentState.STARTING, AgentState.STOPPING}:
+            if agent.state in {SupervisorAgentState.RUNNING, SupervisorAgentState.IDLE, SupervisorAgentState.STARTING, SupervisorAgentState.STOPPING}:
                 handle = self._handles.get(agent_id)
                 if handle is not None:
                     await self._executor_for(agent).stop(handle)
@@ -517,7 +557,7 @@ class AgentManager:
 
             restart_job = self._create_job(agent_id=agent_id, kind=JobKind.RESTART, input_text=request.reason or "restart agent")
             if relaunch_profile and relaunch_workspace:
-                agent.state = AgentState.PENDING
+                agent.state = SupervisorAgentState.PENDING
                 agent.pid = None
                 agent.worker_id = None
                 agent.current_job_id = restart_job.id
@@ -529,7 +569,7 @@ class AgentManager:
                     self._pending_queue.append(agent_id)
                     await self._publish("agent.pending", agent=agent, job=restart_job, message="Agent queued for restart")
             else:
-                agent.state = AgentState.PENDING
+                agent.state = SupervisorAgentState.PENDING
                 agent.pid = None
                 agent.worker_id = None
                 agent.current_job_id = restart_job.id
@@ -573,7 +613,7 @@ class AgentManager:
             else:
                 logs = agent.recent_logs[-20:]
 
-            is_failed = agent.state == AgentState.FAILED
+            is_failed = agent.state == SupervisorAgentState.FAILED
             cause = None
             suggestion = None
 
@@ -642,11 +682,116 @@ class AgentManager:
         return AuditLogResponse(entries=self._audits[-limit:])
 
     async def list_tasks(self, limit: int = 100) -> TaskListResponse:
-        tasks = sorted(self._jobs.values(), key=lambda job: job.updated_at, reverse=True)
+        tasks = sorted(self._tasks.values(), key=lambda task: task.updated_at, reverse=True)
         return TaskListResponse(tasks=tasks[:limit])
 
     async def get_task(self, task_id: str) -> TaskDetailResponse:
-        return TaskDetailResponse(task=self._require_job(task_id))
+        task = self._tasks.get(task_id)
+        if task is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+        return TaskDetailResponse(task=task)
+
+    async def list_jobs(self, limit: int = 100) -> JobListResponse:
+        jobs = sorted(self._jobs.values(), key=lambda job: job.updated_at, reverse=True)
+        return JobListResponse(jobs=jobs[:limit])
+
+    async def get_job(self, job_id: str) -> JobRecord:
+        return self._require_job(job_id)
+
+    async def create_task(self, request: CreateTaskRequest) -> TaskDetailResponse:
+        now = datetime.now(UTC)
+        task = OrchestrationTask(
+            id=str(uuid4()),
+            name=request.name,
+            assigned_agent=request.assigned_agent,
+            status=TaskStatus.BLOCKED if request.dependencies else TaskStatus.PENDING,
+            dependencies=request.dependencies,
+            prompt_template=request.prompt_template,
+            created_at=now,
+            updated_at=now,
+        )
+        self._tasks[task.id] = task
+        await self._append_audit(
+            action="create_task",
+            target_type="task",
+            target_id=task.id,
+            status=AuditStatus.ACCEPTED,
+            message=f"Task '{task.name}' created",
+            details={"assigned_agent": request.assigned_agent, "dependencies": request.dependencies},
+        )
+        await self._publish("task.created", task=task, message=f"Task '{task.name}' queued")
+        return TaskDetailResponse(task=task)
+
+    async def list_approvals(self) -> ApprovalListResponse:
+        approvals = sorted(self._approvals.values(), key=lambda item: item.created_at, reverse=True)
+        return ApprovalListResponse(approvals=approvals)
+
+    async def approve_request(self, approval_id: str) -> ApprovalDecisionResponse:
+        approval = self._require_approval(approval_id)
+        approval.status = ApprovalStatus.APPROVED
+        approval.decided_at = datetime.now(UTC)
+        await self._append_audit(
+            action="approval_approved",
+            target_type="approval",
+            target_id=approval.id,
+            status=AuditStatus.COMPLETED,
+            message=f"Approval {approval.id} approved",
+            details={"agent_id": approval.agent_id, "action_type": approval.action_type.value},
+        )
+        await self._publish("approval.approved", approval=approval, message="Approval granted")
+        await self._resume_agent_after_approval(approval)
+        return ApprovalDecisionResponse(approval=approval)
+
+    async def reject_request(self, approval_id: str) -> ApprovalDecisionResponse:
+        approval = self._require_approval(approval_id)
+        approval.status = ApprovalStatus.REJECTED
+        approval.decided_at = datetime.now(UTC)
+        agent = self._require_agent(approval.agent_id)
+        job_id = str(approval.payload.get("job_id") or "")
+        job = self._jobs.get(job_id) if job_id else None
+        self._update_agent_execution_state(
+            agent,
+            current_state=AgentState.BLOCKED,
+            progress=agent.progress,
+            current_step="Approval rejected",
+            error_message=f"{approval.action_type.value} rejected by operator",
+        )
+        if job is not None and job.state == JobState.QUEUED:
+            self._complete_job(
+                job.id,
+                JobState.FAILED,
+                "Approval rejected",
+                error=f"{approval.action_type.value} rejected by operator",
+            )
+        await self._append_audit(
+            action="approval_rejected",
+            target_type="approval",
+            target_id=approval.id,
+            status=AuditStatus.REJECTED,
+            message=f"Approval {approval.id} rejected",
+            details={"agent_id": approval.agent_id, "action_type": approval.action_type.value},
+        )
+        if job is not None:
+            await self._publish("job.failed", agent=agent, job=job, approval=approval, message="Approval rejected")
+        await self._publish("approval.rejected", agent=agent, approval=approval, message="Approval rejected")
+        return ApprovalDecisionResponse(approval=approval)
+
+    async def replay_agent(self, agent_id: str, request: ReplayAgentRequest) -> AgentDetailResponse:
+        agent = self._require_agent(agent_id)
+        recent_jobs = self._recent_jobs_for_agent(agent_id)
+        failed_job = next((job for job in recent_jobs if job.state == JobState.FAILED), None)
+        base_prompt = failed_job.input_text if failed_job else (agent.current_task or "retry last action")
+        replay_prompt = base_prompt if not request.instruction else f"{base_prompt}\n\nFix instruction: {request.instruction}"
+        await self._append_audit(
+            action="replay_agent",
+            target_type="agent",
+            target_id=agent_id,
+            status=AuditStatus.ACCEPTED,
+            message="Replay requested",
+            details={"instruction": request.instruction},
+        )
+        await self._record_timeline_event(agent_id, EventType.USER_ACTION, {"action": "replay", "instruction": request.instruction})
+        return await self._submit_job(agent_id, replay_prompt, JobKind.PROMPT)
 
     async def _submit_job(self, agent_id: str, input_text: str, kind: JobKind) -> AgentDetailResponse:
         async with self._lock:
@@ -655,9 +800,9 @@ class AgentManager:
             return await self.get_agent(agent_id)
 
     async def _submit_job_locked(self, agent: AgentRecord, input_text: str, kind: JobKind) -> JobRecord:
-        allowed_states = {AgentState.IDLE}
+        allowed_states = {SupervisorAgentState.IDLE}
         if not agent.launch_profile:
-            allowed_states = {AgentState.IDLE, AgentState.RUNNING}
+            allowed_states = {SupervisorAgentState.IDLE, SupervisorAgentState.RUNNING}
         if agent.state not in allowed_states:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Agent is not ready to receive work")
 
@@ -668,12 +813,40 @@ class AgentManager:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Agent is already running a task")
 
         job = self._create_job(agent_id=agent.id, kind=kind, input_text=input_text)
-        agent.state = AgentState.RUNNING
-        agent.current_task = input_text
         agent.current_job_id = job.id
-        agent.updated_at = datetime.now(UTC)
-        handle.active_job_id = job.id
-        await self._executor_for(agent).prompt(handle, input_text)
+        agent.current_task = input_text
+        approval_requests = self._approval_requests_for_job(agent, input_text)
+        if approval_requests:
+            job.state = JobState.QUEUED
+            self._update_agent_execution_state(
+                agent,
+                current_state=AgentState.WAITING_FOR_APPROVAL,
+                progress=agent.progress,
+                current_step="Waiting for operator approval",
+                error_message=None,
+            )
+            for request in approval_requests:
+                self._approvals[request.id] = request
+                await self._record_timeline_event(
+                    agent.id,
+                    EventType.USER_ACTION,
+                    {
+                        "approval_id": request.id,
+                        "status": request.status.value,
+                        "action_type": request.action_type.value,
+                        "payload": request.payload,
+                    },
+                    timestamp=request.created_at,
+                )
+                await self._publish(
+                    "approval.requested",
+                    agent=agent,
+                    approval=request,
+                    message=f"Approval requested for {request.action_type.value}",
+                )
+            return job
+
+        await self._dispatch_existing_job_locked(agent, job)
         await self._append_audit(
             action="submit_job",
             target_type="job",
@@ -687,6 +860,27 @@ class AgentManager:
             self._job_tasks[job.id] = asyncio.create_task(self._run_job(agent.id, job.id, input_text))
         return job
 
+    async def _dispatch_existing_job_locked(self, agent: AgentRecord, job: JobRecord) -> None:
+        handle = self._handles.get(agent.id)
+        if handle is None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Agent handle is unavailable")
+        if agent.launch_profile and handle.active_job_id and handle.active_job_id != job.id:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Agent is already running a task")
+
+        agent.state = SupervisorAgentState.RUNNING
+        agent.current_task = job.input_text
+        agent.current_job_id = job.id
+        agent.updated_at = datetime.now(UTC)
+        self._update_agent_execution_state(
+            agent,
+            current_state=AgentState.RUNNING,
+            progress=max(agent.progress, 5),
+            current_step="Dispatching work",
+            error_message=None,
+        )
+        handle.active_job_id = job.id
+        await self._executor_for(agent).prompt(handle, job.input_text)
+
     async def _schedule_pending_agents(self) -> None:
         async with self._lock:
             while self._pending_queue:
@@ -695,7 +889,7 @@ class AgentManager:
 
                 agent_id = self._pending_queue.popleft()
                 agent = self._agents.get(agent_id)
-                if agent is None or agent.state != AgentState.PENDING:
+                if agent is None or agent.state != SupervisorAgentState.PENDING:
                     continue
                 if agent.launch_profile:
                     await self._launch_process_agent(agent)
@@ -706,7 +900,7 @@ class AgentManager:
     async def _launch_mock_agent(self, agent: AgentRecord) -> None:
         now = datetime.now(UTC)
         worker_id = self._allocate_worker_id()
-        agent.state = AgentState.STARTING
+        agent.state = SupervisorAgentState.STARTING
         agent.worker_id = worker_id
         agent.started_at = now
         agent.updated_at = now
@@ -726,10 +920,10 @@ class AgentManager:
         async with self._lock:
             agent = self._require_agent(agent_id)
             handle = self._handles.get(agent_id)
-            if handle is None or agent.state != AgentState.STARTING:
+            if handle is None or agent.state != SupervisorAgentState.STARTING:
                 return
             self.mock_executor.append_runtime_log(handle, "Mock agent boot completed and is ready for remote tasks")
-            agent.state = AgentState.IDLE
+            agent.state = SupervisorAgentState.IDLE
             agent.updated_at = datetime.now(UTC)
             agent.recent_logs = self.mock_executor.recent_logs(handle, self.settings.default_log_limit)
             if agent.current_job_id:
@@ -744,7 +938,7 @@ class AgentManager:
             if agent is None:
                 await self._append_audit(action="_complete_process_launch", target_type="agent", target_id=agent_id, status=AuditStatus.REJECTED, message="Agent not found")
                 return
-            if agent.state != AgentState.STARTING:
+            if agent.state != SupervisorAgentState.STARTING:
                 await self._append_audit(action="_complete_process_launch", target_type="agent", target_id=agent_id, status=AuditStatus.REJECTED, message=f"Agent in unexpected state {agent.state}")
                 return
             
@@ -752,7 +946,7 @@ class AgentManager:
             handle = self._handles.get(agent_id)
             if handle is None:
                 await self._append_audit(action="_complete_process_launch", target_type="agent", target_id=agent_id, status=AuditStatus.REJECTED, message="Process handle not found")
-                agent.state = AgentState.FAILED
+                agent.state = SupervisorAgentState.FAILED
                 agent.updated_at = datetime.now(UTC)
                 if agent.current_job_id:
                     self._complete_job(agent.current_job_id, JobState.FAILED, "Agent failed to start", error="Agent process was not available after launch")
@@ -763,7 +957,7 @@ class AgentManager:
             if handle.finished_at is not None:
                 error_message = self._classify_launch_error(self._extract_runtime_error(handle), agent=agent)
                 await self._append_audit(action="_complete_process_launch", target_type="agent", target_id=agent_id, status=AuditStatus.REJECTED, message=f"Process exited prematurely: {error_message}")
-                agent.state = AgentState.FAILED
+                agent.state = SupervisorAgentState.FAILED
                 agent.updated_at = datetime.now(UTC)
                 if agent.current_job_id:
                     self._complete_job(agent.current_job_id, JobState.FAILED, "Agent failed to start", error=error_message)
@@ -774,7 +968,7 @@ class AgentManager:
             
             await self._append_audit(action="_complete_process_launch", target_type="agent", target_id=agent_id, status=AuditStatus.ACCEPTED, message="Transitioning to IDLE")
             initial_prompt = agent.current_task
-            agent.state = AgentState.IDLE
+            agent.state = SupervisorAgentState.IDLE
             agent.updated_at = datetime.now(UTC)
             if agent.current_job_id:
                 self._complete_job(agent.current_job_id, JobState.COMPLETED, "Agent process launched successfully")
@@ -808,7 +1002,7 @@ class AgentManager:
             startup_job.state = JobState.RUNNING
             startup_job.started_at = now
             startup_job.updated_at = now
-        agent.state = AgentState.STARTING
+        agent.state = SupervisorAgentState.STARTING
         agent.worker_id = self._allocate_worker_id()
         agent.started_at = agent.started_at or now
         agent.updated_at = now
@@ -823,7 +1017,7 @@ class AgentManager:
                 command_name=command_name,
             )
         except Exception as exc:
-            agent.state = AgentState.FAILED
+            agent.state = SupervisorAgentState.FAILED
             agent.worker_id = None
             agent.updated_at = datetime.now(UTC)
             error_message = self._classify_launch_error(str(exc), launch_profile=launch_profile)
@@ -862,14 +1056,22 @@ class AgentManager:
                 job.state = JobState.RUNNING
                 job.started_at = datetime.now(UTC)
                 job.updated_at = job.started_at
-                await self._publish("job.running", agent=self._agents[agent_id], job=job, message="Job started")
+                agent = self._require_agent(agent_id)
+                self._update_agent_execution_state(
+                    agent,
+                    current_state=AgentState.RUNNING,
+                    progress=max(agent.progress, 10),
+                    current_step="Job started",
+                    error_message=None,
+                )
+                await self._publish("job.running", agent=agent, job=job, message="Job started")
 
             for step in range(1, self.settings.mock_job_steps + 1):
                 await asyncio.sleep(self.settings.mock_job_step_delay_ms / 1000)
                 async with self._lock:
                     handle = self._handles.get(agent_id)
                     agent = self._agents.get(agent_id)
-                    if handle is None or agent is None or agent.state in {AgentState.STOPPING, AgentState.STOPPED, AgentState.FAILED}:
+                    if handle is None or agent is None or agent.state in {SupervisorAgentState.STOPPING, SupervisorAgentState.STOPPED, SupervisorAgentState.FAILED}:
                         return
                     self._executor_for(agent).append_runtime_log(handle, f"Processing '{input_text}' step {step}/{self.settings.mock_job_steps}")
                     agent.recent_logs = self._executor_for(agent).recent_logs(handle, self.settings.default_log_limit)
@@ -882,9 +1084,16 @@ class AgentManager:
                 if handle is not None:
                     self._executor_for(agent).append_runtime_log(handle, f"Finished processing '{input_text}'")
                     agent.recent_logs = self._executor_for(agent).recent_logs(handle, self.settings.default_log_limit)
-                agent.state = AgentState.IDLE
+                agent.state = SupervisorAgentState.IDLE
                 agent.current_task = None
                 agent.updated_at = datetime.now(UTC)
+                self._update_agent_execution_state(
+                    agent,
+                    current_state=AgentState.COMPLETED,
+                    progress=100,
+                    current_step="Completed",
+                    error_message=None,
+                )
                 self._complete_job(job_id, JobState.COMPLETED, "Execution completed")
                 await self._publish_new_logs(agent_id)
                 await self._publish("job.completed", agent=agent, job=self._jobs[job_id], message="Job completed")
@@ -892,8 +1101,15 @@ class AgentManager:
         except Exception as exc:
             async with self._lock:
                 agent = self._require_agent(agent_id)
-                agent.state = AgentState.FAILED
+                agent.state = SupervisorAgentState.FAILED
                 agent.updated_at = datetime.now(UTC)
+                self._update_agent_execution_state(
+                    agent,
+                    current_state=AgentState.FAILED,
+                    progress=agent.progress,
+                    current_step="Execution failed",
+                    error_message=str(exc),
+                )
                 self._complete_job(job_id, JobState.FAILED, "Execution failed", error=str(exc))
                 await self._append_audit(
                     action="job_failed",
@@ -909,7 +1125,14 @@ class AgentManager:
         handle = self._handles.get(agent_id)
         if handle is not None:
             agent.recent_logs = self._executor_for(agent).recent_logs(handle, self.settings.default_log_limit)
-        agent.state = AgentState.STOPPED
+        agent.state = SupervisorAgentState.STOPPED
+        self._update_agent_execution_state(
+            agent,
+            current_state=AgentState.IDLE,
+            progress=0,
+            current_step="Stopped",
+            error_message=None,
+        )
         agent.current_task = None
         agent.worker_id = None
         agent.pid = None
@@ -935,11 +1158,18 @@ class AgentManager:
                     return
                 await self._publish_new_logs(agent_id)
                 agent.pid = handle.pid
-                if handle.finished_at is not None and agent.state not in {AgentState.STOPPED, AgentState.FAILED}:
-                    if agent.state == AgentState.STARTING:
-                        agent.state = AgentState.FAILED
+                if handle.finished_at is not None and agent.state not in {SupervisorAgentState.STOPPED, SupervisorAgentState.FAILED}:
+                    if agent.state == SupervisorAgentState.STARTING:
+                        agent.state = SupervisorAgentState.FAILED
                     else:
-                        agent.state = AgentState.STOPPED if (handle.exit_code or 0) == 0 else AgentState.FAILED
+                        agent.state = SupervisorAgentState.STOPPED if (handle.exit_code or 0) == 0 else SupervisorAgentState.FAILED
+                    self._update_agent_execution_state(
+                        agent,
+                        current_state=AgentState.COMPLETED if agent.state == SupervisorAgentState.STOPPED else AgentState.FAILED,
+                        progress=100 if agent.state == SupervisorAgentState.STOPPED else agent.progress,
+                        current_step="Exited",
+                        error_message=None if agent.state == SupervisorAgentState.STOPPED else self._classify_launch_error(self._extract_runtime_error(handle), agent=agent),
+                    )
                     agent.pid = None
                     agent.worker_id = None
                     agent.current_task = None
@@ -948,18 +1178,29 @@ class AgentManager:
                         error_message = self._classify_launch_error(self._extract_runtime_error(handle), agent=agent)
                         self._complete_job(
                             agent.current_job_id,
-                            JobState.COMPLETED if agent.state == AgentState.STOPPED else JobState.FAILED,
+                            JobState.COMPLETED if agent.state == SupervisorAgentState.STOPPED else JobState.FAILED,
                             "Process exited",
-                            error=None if agent.state == AgentState.STOPPED else error_message,
+                            error=None if agent.state == SupervisorAgentState.STOPPED else error_message,
                         )
                     await self._publish(
-                        "agent.stopped" if agent.state == AgentState.STOPPED else "agent.failed",
+                        "agent.stopped" if agent.state == SupervisorAgentState.STOPPED else "agent.failed",
                         agent=agent,
-                        message="Process exited cleanly" if agent.state == AgentState.STOPPED else self._classify_launch_error(self._extract_runtime_error(handle), agent=agent),
+                        message="Process exited cleanly" if agent.state == SupervisorAgentState.STOPPED else self._classify_launch_error(self._extract_runtime_error(handle), agent=agent),
                     )
                     self._handles.pop(agent_id, None)
                     await self._schedule_pending_agents()
                     return
+
+    async def _task_scheduler_loop(self) -> None:
+        while True:
+            await asyncio.sleep(1.0)
+            async with self._lock:
+                runnable = [
+                    task for task in self._tasks.values()
+                    if task.status in {TaskStatus.PENDING, TaskStatus.BLOCKED} and self._task_dependencies_completed(task)
+                ]
+                for task in runnable:
+                    await self._start_orchestration_task(task)
 
     def _create_job(self, agent_id: str, kind: JobKind, input_text: str) -> JobRecord:
         now = datetime.now(UTC)
@@ -998,7 +1239,7 @@ class AgentManager:
         self._pending_queue = deque(item for item in self._pending_queue if item != agent_id)
 
     def _enforce_capacity(self) -> None:
-        active_states = {AgentState.PENDING, AgentState.STARTING, AgentState.RUNNING, AgentState.IDLE, AgentState.STOPPING}
+        active_states = {SupervisorAgentState.PENDING, SupervisorAgentState.STARTING, SupervisorAgentState.RUNNING, SupervisorAgentState.IDLE, SupervisorAgentState.STOPPING}
         active = sum(1 for agent in self._agents.values() if agent.state in active_states)
         
         # Always try to prune terminated agents to keep the state clean
@@ -1009,7 +1250,7 @@ class AgentManager:
 
     def _prune_agents_locked(self) -> None:
         # Keep only the last 5 finished agents to prevent state bloat
-        terminated_states = {AgentState.STOPPED, AgentState.FAILED}
+        terminated_states = {SupervisorAgentState.STOPPED, SupervisorAgentState.FAILED}
         finished_agents = [
             agent for agent in self._agents.values() 
             if agent.state in terminated_states
@@ -1028,7 +1269,7 @@ class AgentManager:
         busy_agents = sum(
             1
             for agent in self._agents.values()
-            if agent.worker_id and agent.state in {AgentState.STARTING, AgentState.RUNNING, AgentState.IDLE, AgentState.STOPPING}
+            if agent.worker_id and agent.state in {SupervisorAgentState.STARTING, SupervisorAgentState.RUNNING, SupervisorAgentState.IDLE, SupervisorAgentState.STOPPING}
         )
         return busy_agents < self.settings.mock_worker_capacity
 
@@ -1114,15 +1355,18 @@ class AgentManager:
     def start_background_tasks(self) -> None:
         if self._heartbeat_task is None or self._heartbeat_task.done():
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+        if self._scheduler_task is None or self._scheduler_task.done():
+            self._scheduler_task = asyncio.create_task(self._task_scheduler_loop())
 
     async def stop_background_tasks(self) -> None:
-        if self._heartbeat_task is None:
-            return
-        self._heartbeat_task.cancel()
-        try:
-            await self._heartbeat_task
-        except asyncio.CancelledError:
-            pass
+        for task in (self._heartbeat_task, self._scheduler_task):
+            if task is None:
+                continue
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         self._heartbeat_task = None
 
     async def _heartbeat_loop(self) -> None:
@@ -1142,7 +1386,7 @@ class AgentManager:
                         status_snapshot.stuck_indicator
                         and status_snapshot.silence_seconds is not None
                         and status_snapshot.silence_seconds >= self.settings.monitoring_force_fail_after_seconds
-                        and agent.state == AgentState.RUNNING
+                        and agent.state == SupervisorAgentState.RUNNING
                     ):
                         await self._fail_stuck_agent(
                             agent.id,
@@ -1158,7 +1402,7 @@ class AgentManager:
     def _machine_health_status(self) -> MachineHealthStatus:
         statuses = [self._agent_runtime_status(agent) for agent in self._agents.values()]
         warning_count = sum(1 for status in statuses if status.warning_indicator or status.stuck_indicator)
-        failed_count = sum(1 for agent in self._agents.values() if agent.state == AgentState.FAILED)
+        failed_count = sum(1 for agent in self._agents.values() if agent.state == SupervisorAgentState.FAILED)
         mcp_server_records = []
         for adapter in self._runtime_adapters().values():
             if adapter.capabilities.supports_mcp:
@@ -1179,7 +1423,7 @@ class AgentManager:
             last_heartbeat=self._last_heartbeat_at,
             last_seen=self.machine.updated_at,
             agents_total=len(self._agents),
-            agents_running=sum(1 for agent in self._agents.values() if agent.state in {AgentState.RUNNING, AgentState.IDLE}),
+            agents_running=sum(1 for agent in self._agents.values() if agent.state in {SupervisorAgentState.RUNNING, SupervisorAgentState.IDLE}),
             agents_failed=failed_count,
             queued_jobs=sum(1 for job in self._jobs.values() if job.state == JobState.QUEUED),
             warning_count=warning_count,
@@ -1210,9 +1454,9 @@ class AgentManager:
         stuck_indicator = False
         warning_message = None
         monitor_state = agent.state.value
-        if agent.state == AgentState.FAILED:
+        if agent.state == SupervisorAgentState.FAILED:
             monitor_state = "failed"
-        elif agent.state == AgentState.RUNNING:
+        elif agent.state == SupervisorAgentState.RUNNING:
             if silence_seconds is not None and silence_seconds >= self.settings.monitoring_stuck_after_seconds:
                 stuck_indicator = True
                 warning_indicator = True
@@ -1228,7 +1472,7 @@ class AgentManager:
                 warning_message = f"No supervisor heartbeat for {heartbeat_age_seconds}s"
             else:
                 monitor_state = "running"
-        elif agent.state == AgentState.IDLE:
+        elif agent.state == SupervisorAgentState.IDLE:
             monitor_state = "idle"
         resources = self._resource_usage(handle)
         return AgentRuntimeStatus(
@@ -1237,6 +1481,11 @@ class AgentManager:
             machine_name=self.machine.name,
             type=agent.type,
             state=agent.state,
+            current_state=agent.current_state,
+            progress=agent.progress,
+            current_step=agent.current_step,
+            last_updated_ts=agent.last_updated_ts,
+            error_message=agent.error_message,
             monitor_state=monitor_state,
             elapsed_seconds=elapsed_seconds,
             silence_seconds=silence_seconds,
@@ -1351,9 +1600,18 @@ class AgentManager:
         self._agents = {agent.id: agent for agent in persisted.agents}
         self._jobs = {job.id: job for job in persisted.jobs}
         self._audits = persisted.audits[-self.settings.max_log_entries :]
+        self._approvals = {approval.id: approval for approval in persisted.approvals}
+        self._tasks = {task.id: task for task in persisted.tasks}
+        for event in persisted.timeline_events:
+            history = self._timeline_events.setdefault(event.agent_id, deque(maxlen=self.settings.max_log_entries * 5))
+            history.append(event)
         for agent in self._agents.values():
-            if agent.state in {AgentState.PENDING, AgentState.STARTING, AgentState.RUNNING, AgentState.IDLE, AgentState.STOPPING}:
-                agent.state = AgentState.STOPPED
+            if not agent.name:
+                agent.name = self._default_agent_name(agent.type, agent.id)
+            if not getattr(agent, "last_updated_ts", None):
+                agent.last_updated_ts = now
+            if agent.state in {SupervisorAgentState.PENDING, SupervisorAgentState.STARTING, SupervisorAgentState.RUNNING, SupervisorAgentState.IDLE, SupervisorAgentState.STOPPING}:
+                agent.state = SupervisorAgentState.STOPPED
                 agent.pid = None
                 agent.worker_id = None
                 agent.current_task = None
@@ -1375,6 +1633,9 @@ class AgentManager:
                 agents=list(self._agents.values()),
                 jobs=list(self._jobs.values()),
                 audits=self._audits[-self.settings.max_log_entries :],
+                timeline_events=[event for history in self._timeline_events.values() for event in history],
+                approvals=list(self._approvals.values()),
+                tasks=list(self._tasks.values()),
             )
         )
 
@@ -1425,7 +1686,7 @@ class AgentManager:
         busy_workers = sum(
             1
             for agent in self._agents.values()
-            if agent.worker_id and agent.state in {AgentState.STARTING, AgentState.RUNNING, AgentState.IDLE, AgentState.STOPPING}
+            if agent.worker_id and agent.state in {SupervisorAgentState.STARTING, SupervisorAgentState.RUNNING, SupervisorAgentState.IDLE, SupervisorAgentState.STOPPING}
         )
         self.machine.worker_pool = WorkerPoolState(
             desired_workers=self.settings.mock_worker_capacity,
@@ -1455,11 +1716,17 @@ class AgentManager:
             if await self._handle_internal_event(agent, handle, log):
                 continue
             agent.recent_logs = (agent.recent_logs + [log])[-self.settings.default_log_limit :]
+            if log.stream == "stderr" or "error" in log.message.lower():
+                await self._record_timeline_event(agent.id, EventType.ERROR, {"stream": log.stream, "message": log.message}, timestamp=log.timestamp)
+            elif "tool" in log.message.lower():
+                await self._record_timeline_event(agent.id, EventType.TOOL_CALL, {"stream": log.stream, "message": log.message}, timestamp=log.timestamp)
+            elif any(token in log.message.lower() for token in ("diff", "patch", "edited", "wrote", "updated file")):
+                await self._record_timeline_event(agent.id, EventType.FILE_EDIT, {"stream": log.stream, "message": log.message}, timestamp=log.timestamp)
             await self._publish("agent.log", agent=agent, log=log, message=log.message)
 
     async def _fail_stuck_agent(self, agent_id: str, reason: str) -> None:
         agent = self._agents.get(agent_id)
-        if agent is None or agent.state != AgentState.RUNNING:
+        if agent is None or agent.state != SupervisorAgentState.RUNNING:
             return
         handle = self._handles.get(agent_id)
         if handle is not None:
@@ -1470,7 +1737,14 @@ class AgentManager:
         if monitor:
             monitor.cancel()
         self._handles.pop(agent_id, None)
-        agent.state = AgentState.FAILED
+        agent.state = SupervisorAgentState.FAILED
+        self._update_agent_execution_state(
+            agent,
+            current_state=AgentState.BLOCKED,
+            progress=agent.progress,
+            current_step="Execution stalled",
+            error_message=reason,
+        )
         agent.pid = None
         agent.worker_id = None
         agent.current_task = None
@@ -1504,14 +1778,47 @@ class AgentManager:
 
         job = self._jobs[job_id]
         now = datetime.now(UTC)
+        if event_name == "state.update":
+            state_name = str(payload.get("state") or "RUNNING")
+            step = str(payload.get("step") or agent.current_step or "Working")
+            progress = int(payload.get("progress") or agent.progress or 0)
+            error = str(payload.get("error") or "").strip() or None
+            try:
+                execution_state = AgentState(state_name)
+            except ValueError:
+                execution_state = AgentState.RUNNING
+            self._update_agent_execution_state(
+                agent,
+                current_state=execution_state,
+                progress=progress,
+                current_step=step,
+                error_message=error,
+            )
+            if execution_state == AgentState.BLOCKED:
+                agent.state = SupervisorAgentState.FAILED
+            await self._publish(
+                "agent.state",
+                agent=agent,
+                state_update=self._agent_state_snapshot(agent),
+                job=job,
+                message=step,
+            )
+            return True
         if event_name == "job.started":
             job.state = JobState.RUNNING
             job.started_at = now
             job.updated_at = now
-            agent.state = AgentState.RUNNING
+            agent.state = SupervisorAgentState.RUNNING
             agent.current_job_id = job.id
             agent.current_task = job.input_text
             agent.updated_at = now
+            self._update_agent_execution_state(
+                agent,
+                current_state=AgentState.RUNNING,
+                progress=max(agent.progress, 15),
+                current_step="Job started",
+                error_message=None,
+            )
             await self._publish("job.running", agent=agent, job=job, message="Job started")
             return True
 
@@ -1520,11 +1827,18 @@ class AgentManager:
         if event_name == "job.completed":
             self._complete_job(job.id, JobState.COMPLETED, summary or "Execution completed")
             handle.active_job_id = None
-            agent.state = AgentState.IDLE
+            agent.state = SupervisorAgentState.IDLE
             agent.current_task = None
             agent.current_job_id = job.id
             agent.updated_at = datetime.now(UTC)
             agent.last_output_at = agent.updated_at
+            self._update_agent_execution_state(
+                agent,
+                current_state=AgentState.COMPLETED,
+                progress=100,
+                current_step="Completed",
+                error_message=None,
+            )
             await self._publish("job.completed", agent=agent, job=job, message=summary or "Job completed")
             return True
 
@@ -1532,11 +1846,18 @@ class AgentManager:
             runtime_error = self._classify_launch_error(error or summary or "Execution failed", agent=agent)
             self._complete_job(job.id, JobState.FAILED, summary or "Execution failed", error=runtime_error)
             handle.active_job_id = None
-            agent.state = AgentState.IDLE
+            agent.state = SupervisorAgentState.IDLE
             agent.current_task = None
             agent.current_job_id = job.id
             agent.updated_at = datetime.now(UTC)
             agent.last_output_at = agent.updated_at
+            self._update_agent_execution_state(
+                agent,
+                current_state=AgentState.FAILED,
+                progress=max(agent.progress, 100),
+                current_step="Failed",
+                error_message=runtime_error,
+            )
             await self._publish("job.failed", agent=agent, job=job, message=runtime_error or summary or "Job failed")
             return True
         return True
@@ -1570,18 +1891,49 @@ class AgentManager:
         event: str,
         agent: AgentRecord | None = None,
         agent_status: AgentRuntimeStatus | None = None,
+        state_update: AgentStateSnapshot | None = None,
         job: JobRecord | None = None,
         log=None,
+        approval: ApprovalRequest | None = None,
         audit: AuditEntry | None = None,
+        task: OrchestrationTask | None = None,
         machine_health: MachineHealthStatus | None = None,
         message: str | None = None,
     ) -> None:
         await self._refresh_machine()
         await self._persist_state_locked()
         timestamp = datetime.now(UTC)
+        timeline_entry = None
+        computed_state_update = state_update
         if agent is not None:
             agent.metadata["last_heartbeat_at"] = timestamp.isoformat()
             agent_status = agent_status or self._agent_runtime_status(agent)
+            computed_state_update = computed_state_update or self._agent_state_snapshot(agent)
+            timeline_payload: dict[str, object] = {"event": event, "message": message}
+            if job is not None:
+                timeline_payload["job_id"] = job.id
+                timeline_payload["job_state"] = job.state.value
+            if approval is not None:
+                timeline_payload["approval_id"] = approval.id
+                timeline_payload["approval_status"] = approval.status.value
+                timeline_payload["approval_action_type"] = approval.action_type.value
+            if audit is not None:
+                timeline_payload["audit_id"] = audit.id
+                timeline_payload["audit_action"] = audit.action
+            if task is not None:
+                timeline_payload["task_id"] = task.id
+                timeline_payload["task_status"] = task.status.value
+            if log is not None:
+                timeline_payload["log"] = {"stream": log.stream, "message": log.message}
+            if event.startswith("agent.") or event.startswith("job.") or event.startswith("approval."):
+                event_type = EventType.STATE_CHANGE
+            elif event.startswith("audit.") or event.endswith(".requested"):
+                event_type = EventType.USER_ACTION
+            elif "failed" in event or "error" in event:
+                event_type = EventType.ERROR
+            else:
+                event_type = EventType.USER_ACTION
+            timeline_entry = await self._record_timeline_event(agent.id, event_type, timeline_payload, timestamp=timestamp)
         machine_health = machine_health or self._machine_health_status()
         emitted = SupervisorEvent(
             event=event,
@@ -1590,7 +1942,11 @@ class AgentManager:
             machine_health=machine_health,
             agent=agent,
             agent_status=agent_status,
+            state_update=computed_state_update,
+            timeline_event=timeline_entry,
+            approval=approval,
             job=job,
+            task=task,
             log=log,
             audit=audit,
             message=message,
@@ -1600,6 +1956,162 @@ class AgentManager:
             history = self._agent_event_history.setdefault(agent.id, deque(maxlen=self.settings.max_log_entries))
             history.append(emitted)
         await self.event_bus.publish(emitted)
+
+    def _default_agent_name(self, agent_type, agent_id: str) -> str:
+        return f"{agent_type.value}-{agent_id[:8]}"
+
+    def _agent_state_snapshot(self, agent: AgentRecord) -> AgentStateSnapshot:
+        return AgentStateSnapshot(
+            agent_id=agent.id,
+            name=agent.name,
+            current_state=agent.current_state,
+            progress=agent.progress,
+            current_step=agent.current_step,
+            last_updated_ts=agent.last_updated_ts,
+            error_message=agent.error_message,
+        )
+
+    def _update_agent_execution_state(
+        self,
+        agent: AgentRecord,
+        *,
+        current_state: AgentState | None = None,
+        progress: int | None = None,
+        current_step: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        if current_state is not None:
+            agent.current_state = current_state
+        if progress is not None:
+            agent.progress = max(0, min(100, progress))
+        if current_step is not None:
+            agent.current_step = current_step
+        agent.error_message = error_message
+        agent.last_updated_ts = datetime.now(UTC)
+
+    async def _record_timeline_event(
+        self,
+        agent_id: str,
+        event_type: EventType,
+        payload: dict[str, object],
+        *,
+        timestamp: datetime | None = None,
+    ) -> AgentEvent:
+        entry = AgentEvent(
+            event_id=str(uuid4()),
+            agent_id=agent_id,
+            timestamp=timestamp or datetime.now(UTC),
+            type=event_type,
+            payload=payload,
+        )
+        history = self._timeline_events.setdefault(agent_id, deque(maxlen=self.settings.max_log_entries * 5))
+        history.append(entry)
+        return entry
+
+    def _approval_requests_for_job(self, agent: AgentRecord, input_text: str) -> list[ApprovalRequest]:
+        if not agent.launch_profile or not agent.workspace:
+            return []
+        adapter_id = str(agent.metadata.get("adapter_id") or self._launch_request_from_agent(agent).get("adapter_id") or "")
+        adapter = self._runtime_adapters().get(adapter_id)
+        if adapter is None:
+            return []
+        current_job_id = agent.current_job_id
+        requests = []
+        for raw in adapter.risky_action_requests(
+            input_text,
+            agent.workspace,
+            runtime_model=agent.runtime_model,
+            command_name=agent.command_name,
+        ):
+            requests.append(
+                ApprovalRequest(
+                    id=str(uuid4()),
+                    agent_id=agent.id,
+                    action_type=ApprovalActionType(str(raw.get("action_type"))),
+                    payload={
+                        **dict(raw.get("payload") or {}),
+                        "job_id": current_job_id,
+                        "prompt": input_text,
+                    },
+                    created_at=datetime.now(UTC),
+                )
+            )
+        return requests
+
+    def _task_dependencies_completed(self, task: OrchestrationTask) -> bool:
+        if not task.dependencies:
+            return True
+        dependency_states = [self._tasks.get(item_id).status for item_id in task.dependencies if self._tasks.get(item_id)]
+        if len(dependency_states) != len(task.dependencies):
+            return False
+        return all(state == TaskStatus.COMPLETED for state in dependency_states)
+
+    async def _start_orchestration_task(self, task: OrchestrationTask) -> None:
+        agent = self._agents.get(task.assigned_agent or "")
+        if agent is None:
+            task.status = TaskStatus.BLOCKED
+            task.updated_at = datetime.now(UTC)
+            task.error_message = "Assigned agent is unavailable"
+            return
+        if agent.state not in {SupervisorAgentState.IDLE, SupervisorAgentState.RUNNING}:
+            task.status = TaskStatus.BLOCKED
+            task.updated_at = datetime.now(UTC)
+            task.error_message = "Assigned agent is not ready"
+            return
+        task.status = TaskStatus.RUNNING
+        task.started_at = datetime.now(UTC)
+        task.updated_at = task.started_at
+        task.error_message = None
+        await self._publish("task.running", agent=agent, task=task, message=f"Workflow task '{task.name}' started")
+        try:
+            await self._submit_job_locked(agent, task.prompt_template, JobKind.TASK)
+            task.status = TaskStatus.COMPLETED
+            task.finished_at = datetime.now(UTC)
+            task.updated_at = task.finished_at
+            task.summary = "Queued on assigned agent"
+            await self._publish("task.completed", agent=agent, task=task, message=f"Workflow task '{task.name}' queued")
+        except HTTPException as exc:
+            task.status = TaskStatus.BLOCKED if exc.status_code == status.HTTP_409_CONFLICT else TaskStatus.FAILED
+            task.updated_at = datetime.now(UTC)
+            task.error_message = str(exc.detail)
+            await self._publish("task.failed", agent=agent, task=task, message=task.error_message)
+
+    async def _resume_agent_after_approval(self, approval: ApprovalRequest) -> None:
+        pending = [item for item in self._approvals.values() if item.agent_id == approval.agent_id and item.status == ApprovalStatus.PENDING]
+        if pending:
+            return
+        agent = self._require_agent(approval.agent_id)
+        job_id = str(approval.payload.get("job_id") or agent.current_job_id or "")
+        if not job_id:
+            return
+        job = self._jobs.get(job_id)
+        if job is None or job.state != JobState.QUEUED:
+            return
+        self._update_agent_execution_state(
+            agent,
+            current_state=AgentState.RUNNING,
+            progress=max(agent.progress, 10),
+            current_step="Approval granted, resuming",
+            error_message=None,
+        )
+        await self._dispatch_existing_job_locked(agent, job)
+        await self._append_audit(
+            action="approval_resume",
+            target_type="job",
+            target_id=job.id,
+            status=AuditStatus.ACCEPTED,
+            message="Queued job resumed after approvals",
+            details={"agent_id": agent.id},
+        )
+        await self._publish("job.accepted", agent=agent, job=job, approval=approval, message="Approvals satisfied, dispatching queued job")
+
+    def _require_approval(self, approval_id: str) -> ApprovalRequest:
+        approval = self._approvals.get(approval_id)
+        if approval is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approval request not found")
+        if approval.status != ApprovalStatus.PENDING:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Approval request is already resolved")
+        return approval
 
     def _executor_for(self, agent: AgentRecord):
         return self.runtime_executor if agent.launch_profile else self.mock_executor
@@ -1682,22 +2194,27 @@ class AgentManager:
         async with self._lock:
             to_remove = [
                 agent_id for agent_id, agent in self._agents.items()
-                if agent.state in {AgentState.FAILED, AgentState.STOPPED}
+                if agent.state in {SupervisorAgentState.FAILED, SupervisorAgentState.STOPPED}
             ]
             for agent_id in to_remove:
                 self._agents.pop(agent_id, None)
                 self._handles.pop(agent_id, None)
                 self._agent_event_history.pop(agent_id, None)
-            
-            await self._append_audit(
-                action="clear_terminated_agents",
-                target_type="machine",
-                target_id=self.machine.id,
-                status=AuditStatus.ACCEPTED,
-                message=f"Cleared {len(to_remove)} terminated agents",
-            )
-            await self._publish("agents.cleared", message=f"Cleared {len(to_remove)} terminated agents")
-        
-        await self._refresh_machine()
-        async with self._lock:
             await self._persist_state_locked()
+
+        entry = AuditEntry(
+            id=str(uuid4()),
+            timestamp=datetime.now(UTC),
+            action="clear_terminated_agents",
+            target_type="machine",
+            target_id=self.machine.id,
+            status=AuditStatus.ACCEPTED,
+            message=f"Cleared {len(to_remove)} terminated agents",
+            details={},
+        )
+        self._audits.append(entry)
+        if len(self._audits) > self.settings.max_log_entries:
+            del self._audits[0 : len(self._audits) - self.settings.max_log_entries]
+
+        await self._refresh_machine()
+
